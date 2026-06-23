@@ -1,0 +1,16 @@
+[project]
+name = "auth0tf"
+version = "0.1.0"
+description = "Restructure auth0 tf generate output into a multi-env Terraform project"
+requires-python = ">=3.11"
+dependencies = ["python-hcl2>=4.3.0"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[tool.setuptools.packages.find]
+where = ["scripts"]
+
+[tool.pytest.ini_options]
+pythonpath = ["scripts"]
+testpaths = ["tests"]

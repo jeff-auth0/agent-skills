@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+.pytest_cache/
+*.egg-info/
+
+# Claude Code local session config — machine-specific, not part of the skill
+.claude/

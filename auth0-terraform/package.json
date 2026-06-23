@@ -1,0 +1,5 @@
+{
+  "name": "agent-skills",
+  "version": "0.1.0",
+  "description": "Reusable Claude Code skills for Auth0, Terraform, and DevOps workflows"
+}
