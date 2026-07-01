@@ -43,7 +43,7 @@ unset AUTH0_API_TOKEN                         # api_token conflicts with client_
 - These are read-only credentials for export; they are NOT written into the
   generated project (each env supplies its own provider creds via tfvars/KV).
 
-#### How to obtain the credentials from the user (do this BEFORE the four questions)
+#### How to obtain the credentials from the user (do this BEFORE the five questions)
 
 The agent's shell does not inherit env vars the user exported in their own
 terminal (each command runs a fresh shell). A pasted client secret also persists
@@ -78,7 +78,7 @@ in order of preference:
 Ask which option they prefer; do not assume. If a complete `auth0_generated.tf`
 already exists from a prior run, skip elicitation and use it.
 
-## Ask these four questions (one message, in order)
+## Ask these five questions (one message, in order)
 
 1. Environment name for this active tenant (e.g. `dev`, `staging`, `prod`).
 2. KV provider for secrets — **only `azure` (Azure Key Vault) is currently supported.**
@@ -91,6 +91,9 @@ already exists from a prior run, skip elicitation and use it.
    - `none` — skip pipeline generation, wire CI/CD manually
    If the user asks for `github-actions` or `gitlab-ci`, tell them those are not yet
    supported and ask whether they want `none` instead.
+5. **Output path** — full absolute path where the generated Terraform project should be
+   written (e.g. `~/projects/rclb-terraform`). No default — always ask. Use this path
+   as `--out` in the transformer step.
 
 ## Generate
 
@@ -121,12 +124,14 @@ already exists from a prior run, skip elicitation and use it.
    ```
    A per-resource error after this is fine; the config is written during the plan
    graph walk. Verify the file now exists before continuing.
-2. Run the transformer (from the skill directory), pointing at the raw output and
-   the user's chosen output directory (default `./auth0-terraform`):
+2. Run the transformer (from the skill directory), passing the user's output path
+   from question 5 as `--out`. Expand `~` before passing — the transformer runs
+   from the skill dir, so relative paths resolve there, not the user's cwd:
    ```bash
-   python -m auth0tf.cli \
+   OUT=$(eval echo "<user-supplied-path>")   # expands ~ correctly
+   python3 -m scripts.auth0tf.cli \
      --input /tmp/auth0tf-raw \
-     --out ./auth0-terraform \
+     --out "$OUT" \
      --env <env> \
      --kv <azure|aws> \
      --other-envs "<comma,separated>" \
