@@ -15,7 +15,8 @@ from .hclgen import render_value
 from .model import Tenant
 from .secrets import classify_field
 
-BACKEND_STUB = """terraform {
+BACKEND_STUBS = {
+    "azurerm": """terraform {
   backend "azurerm" {
     # TODO: set these or pass via -backend-config at init time
     # resource_group_name  = ""
@@ -24,7 +25,30 @@ BACKEND_STUB = """terraform {
     # key                  = "%(env)s.auth0.tfstate"
   }
 }
-"""
+""",
+    "s3": """terraform {
+  backend "s3" {
+    # TODO: set these or pass via -backend-config at init time
+    # bucket = ""
+    # key    = "%(env)s/auth0.tfstate"
+    # region = ""
+  }
+}
+""",
+    "gcs": """terraform {
+  backend "gcs" {
+    # TODO: set these or pass via -backend-config at init time
+    # bucket = ""
+    # prefix = "auth0"
+  }
+}
+""",
+    "local": """terraform {
+  # TODO: configure remote backend
+  # backend "azurerm" {} or backend "s3" {} etc.
+}
+""",
+}
 
 
 def _present(tenant: Tenant) -> list[tuple[str, str, list]]:
@@ -43,12 +67,7 @@ def _present(tenant: Tenant) -> list[tuple[str, str, list]]:
     return out
 
 
-def _providers(kv: str) -> str:
-    kv_block = (
-        'provider "azurerm" {\n  features {}\n}\n'
-        if kv == "azure"
-        else 'provider "aws" {\n  region = var.aws_region\n}\n'
-    )
+def _providers() -> str:
     return (
         'terraform {\n'
         '  required_providers {\n'
@@ -58,8 +77,7 @@ def _providers(kv: str) -> str:
         '  domain        = var.auth0_domain\n'
         '  client_id     = var.auth0_client_id\n'
         '  client_secret = var.auth0_client_secret\n'
-        '}\n\n'
-        + kv_block
+        '}\n'
     )
 
 
@@ -105,7 +123,7 @@ _ACTION_KV_FOR_EACH = (
 )
 
 
-def _secrets_tf(present, kv: str) -> str:
+def _secrets_tf(present) -> str:
     blocks = []
     for tf_type, var_name, resources in present:
         all_block_fields = set().union(*(r.block_fields for r in resources))
@@ -113,58 +131,61 @@ def _secrets_tf(present, kv: str) -> str:
                        if _is_input_secret(tf_type, k, all_block_fields)]
         if not secret_keys:
             continue
-        if kv == "azure":
-            blocks.append(
-                f'data "azurerm_key_vault_secret" "{var_name}_secrets" {{\n'
-                f"  for_each     = var.{var_name}\n"
-                f'  name         = "auth0-${{replace(each.key, "_", "-")}}-secret"\n'
-                f"  key_vault_id = var.key_vault_id\n}}\n"
-            )
-        else:
-            blocks.append(
-                f'data "aws_secretsmanager_secret_version" "{var_name}_secrets" {{\n'
-                f"  for_each  = var.{var_name}\n"
-                f'  secret_id = "auth0/${{each.key}}/secret"\n}}\n'
-            )
-    # Action secrets flagged for Key Vault: one data source over all
-    # (action, secret-name) pairs, keyed "<action>::<NAME>".
+        blocks.append(
+            f'# {var_name}_secrets — map(string) keyed by resource name.\n'
+            f'# Wire this variable using ONE of:\n'
+            f'#\n'
+            f'# Option A — Azure Key Vault (azurerm provider):\n'
+            f'#   data "azurerm_key_vault_secret" "{var_name}_secrets" {{\n'
+            f'#     for_each     = var.{var_name}\n'
+            f'#     name         = "auth0-${{replace(each.key, "_", "-")}}-secret"\n'
+            f'#     key_vault_id = var.key_vault_id\n'
+            f'#   }}\n'
+            f'#   # in main.tf replace the var line with:\n'
+            f'#   {var_name}_secrets = {{ for k, v in data.azurerm_key_vault_secret.{var_name}_secrets : k => v.value }}\n'
+            f'#\n'
+            f'# Option B — AWS Secrets Manager (aws provider):\n'
+            f'#   data "aws_secretsmanager_secret_version" "{var_name}_secrets" {{\n'
+            f'#     for_each  = var.{var_name}\n'
+            f'#     secret_id = "auth0/${{each.key}}/secret"\n'
+            f'#   }}\n'
+            f'#   # in main.tf replace the var line with:\n'
+            f'#   {var_name}_secrets = {{ for k, v in data.aws_secretsmanager_secret_version.{var_name}_secrets : k => v.secret_string }}\n'
+            f'#\n'
+            f'# Option C — GitHub Actions:\n'
+            f'#   env:\n'
+            f'#     TF_VAR_{var_name}_secrets: \'{{\"<resource-name>\": "${{{{ secrets.SECRET_NAME }}}}"}}\'\n'
+            f'#\n'
+            f'# Option D — any CI / local (env var):\n'
+            f'#   export TF_VAR_{var_name}_secrets=\'{{\"<resource-name>\":\"<value>\"}}\'\n'
+        )
+    # Action secrets flagged for Key Vault: comment scaffold.
     if _actions_have_kv(present):
-        if kv == "azure":
-            blocks.append(
-                'data "azurerm_key_vault_secret" "actions_kv_secrets" {\n'
-                + _ACTION_KV_FOR_EACH
-                + '  name         = "auth0-action-${replace(each.value.action, "_", "-")}'
-                  '-${lower(replace(each.value.secret, "_", "-"))}"\n'
-                "  key_vault_id = var.key_vault_id\n}\n"
-            )
-        else:
-            blocks.append(
-                'data "aws_secretsmanager_secret_version" "actions_kv_secrets" {\n'
-                + _ACTION_KV_FOR_EACH
-                + '  secret_id = "auth0/action/${each.value.action}/${each.value.secret}"\n}\n'
-            )
-    # Email provider credentials (write-only in Auth0) sourced from Key Vault,
-    # one entry per credential field of the configured provider.
+        blocks.append(
+            '# actions_kv_secrets — action secrets sourced from Key Vault.\n'
+            '# Keyed as "<action_name>::<SECRET_NAME>".\n'
+            '# Wire using your preferred secret store (see connections_secrets above for patterns).\n'
+            "# export TF_VAR_actions_kv_secrets='{\"my_action::API_KEY\":\"<value>\"}'\n"
+        )
+    # Email provider credentials comment scaffold.
     cred_fields = _email_cred_fields(present)
     if cred_fields:
-        field_set = "[" + ", ".join(f'"{f}"' for f in cred_fields) + "]"
-        if kv == "azure":
-            blocks.append(
-                'data "azurerm_key_vault_secret" "email_provider_credentials" {\n'
-                f"  for_each     = toset({field_set})\n"
-                '  name         = "auth0-email-provider-${replace(each.key, "_", "-")}"\n'
-                "  key_vault_id = var.key_vault_id\n}\n"
-            )
-        else:
-            blocks.append(
-                'data "aws_secretsmanager_secret_version" "email_provider_credentials" {\n'
-                f"  for_each  = toset({field_set})\n"
-                '  secret_id = "auth0/email-provider/${each.key}"\n}\n'
-            )
+        example_fields = ", ".join(f'"{f}":"<value>"' for f in cred_fields)
+        blocks.append(
+            '# email_provider_credentials — map(string) of credential fields for the email provider.\n'
+            f"# export TF_VAR_email_provider_credentials='{{{example_fields}}}'\n"
+            '# Or use a KV data source (see connections_secrets above for patterns).\n'
+        )
+    if not blocks:
+        return (
+            '# No external secrets detected for this tenant.\n'
+            '# If you add connections with client secrets or action secrets later,\n'
+            '# add injection here and wire them in main.tf.\n'
+        )
     return "\n".join(blocks)
 
 
-def _main_tf(present, kv: str, populated: bool) -> str:
+def _main_tf(present, populated: bool) -> str:
     if not populated:
         return ("# TODO: populate this environment.\n"
                 "# Run the auth0-terraform skill against this tenant,\n"
@@ -178,32 +199,13 @@ def _main_tf(present, kv: str, populated: bool) -> str:
         has_secret = any(_is_input_secret(tf_type, k, all_block_fields)
                          for r in resources for k in r.attrs)
         if has_secret:
-            if kv == "azure":
-                expr = (f"{{ for k, v in data.azurerm_key_vault_secret."
-                        f"{var_name}_secrets : k => v.value }}")
-            else:
-                expr = (f"{{ for k, v in data.aws_secretsmanager_secret_version."
-                        f"{var_name}_secrets : k => v.secret_string }}")
-            lines.append(f"  {var_name}_secrets = {expr}")
-    # Pass Key-Vault-sourced action secrets into the module (merged with the
-    # hardcoded ones there), keyed "<action>::<NAME>".
+            lines.append(f"  {var_name}_secrets = var.{var_name}_secrets")
+    # Pass action KV secrets into the module, keyed "<action>::<NAME>".
     if _actions_have_kv(present):
-        if kv == "azure":
-            expr = ("{ for k, v in data.azurerm_key_vault_secret."
-                    "actions_kv_secrets : k => v.value }")
-        else:
-            expr = ("{ for k, v in data.aws_secretsmanager_secret_version."
-                    "actions_kv_secrets : k => v.secret_string }")
-        lines.append(f"  actions_kv_secrets = {expr}")
-    # Pass Key-Vault-sourced email provider credentials into the module.
+        lines.append("  actions_kv_secrets = var.actions_kv_secrets")
+    # Pass email provider credentials into the module.
     if _email_cred_fields(present):
-        if kv == "azure":
-            expr = ("{ for k, v in data.azurerm_key_vault_secret."
-                    "email_provider_credentials : k => v.value }")
-        else:
-            expr = ("{ for k, v in data.aws_secretsmanager_secret_version."
-                    "email_provider_credentials : k => v.secret_string }")
-        lines.append(f"  email_provider_credentials = {expr}")
+        lines.append("  email_provider_credentials = var.email_provider_credentials")
     lines.append("}")
     return "\n".join(lines) + "\n"
 
@@ -280,30 +282,48 @@ def _var_block(name: str, **kwargs: str) -> str:
     return f'variable "{name}" {{\n{inner}\n}}\n'
 
 
-def _variables_tf(present, kv: str, populated: bool) -> str:
+def _variables_tf(present, populated: bool) -> str:
     parts = [
         _var_block("auth0_domain", type="string"),
         _var_block("auth0_client_id", type="string"),
         _var_block("auth0_client_secret", type="string", sensitive="true"),
     ]
-    if kv == "azure":
-        parts.append(_var_block("key_vault_id", type="string"))
-    else:
-        parts.append(_var_block("aws_region", type="string", default='"us-east-1"'))
-    for _tf_type, var_name, _resources in present:
+    for tf_type, var_name, resources in present:
         parts.append(_var_block(var_name, type="any", default="{}"))
+        # Add a sensitive map variable for each type that has input secrets.
+        all_block_fields = set().union(*(r.block_fields for r in resources))
+        has_secret = any(_is_input_secret(tf_type, k, all_block_fields)
+                         for r in resources for k in r.attrs)
+        if has_secret:
+            parts.append(
+                _var_block(f"{var_name}_secrets",
+                           type="map(string)", default="{}", sensitive="true")
+            )
+    if _actions_have_kv(present):
+        parts.append(
+            _var_block("actions_kv_secrets",
+                       type="map(string)", default="{}", sensitive="true")
+        )
+    if _email_cred_fields(present):
+        parts.append(
+            _var_block("email_provider_credentials",
+                       type="map(string)", default="{}", sensitive="true")
+        )
     return "\n".join(parts)
 
 
-def emit_env(tenant: Tenant, env_dir: Path, env: str, kv: str, populated: bool) -> None:
+def emit_env(tenant: Tenant, env_dir: Path, env: str, populated: bool, backend: str = "local") -> None:
     env_dir = Path(env_dir)
     env_dir.mkdir(parents=True, exist_ok=True)
     present = _present(tenant)
 
-    (env_dir / "providers.tf").write_text(_providers(kv))
-    (env_dir / "backend.tf").write_text(BACKEND_STUB % {"env": env})
-    (env_dir / "main.tf").write_text(_main_tf(present, kv, populated))
-    (env_dir / "secrets.tf").write_text(_secrets_tf(present, kv) if populated else
-                                        "# TODO: KV data sources for this env.\n")
+    stub = BACKEND_STUBS.get(backend, BACKEND_STUBS["local"])
+    backend_content = stub % {"env": env} if backend in ("azurerm", "s3") else stub
+
+    (env_dir / "providers.tf").write_text(_providers())
+    (env_dir / "backend.tf").write_text(backend_content)
+    (env_dir / "main.tf").write_text(_main_tf(present, populated))
+    (env_dir / "secrets.tf").write_text(_secrets_tf(present) if populated else
+                                        "# TODO: wire secrets for this env.\n")
     (env_dir / "terraform.tfvars").write_text(_tfvars(present, populated))
-    (env_dir / "variables.tf").write_text(_variables_tf(present, kv, populated))
+    (env_dir / "variables.tf").write_text(_variables_tf(present, populated))

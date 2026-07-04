@@ -1,6 +1,6 @@
 ---
 name: auth0-terraform
-description: Use when you want to reverse-engineer an active Auth0 tenant into a structured, multi-environment Terraform project for replicating that tenant into new empty tenants. Runs `auth0 tf generate`, then restructures the flat output into a flat `modules/` directory (one `for_each` block per resource type with typed map variables), per-environment `envs/` directories, KV-backed input secrets (Azure Key Vault or AWS Secrets Manager), computed-secret outputs, extracted action/DB-script files, and an optional Azure pipeline. Trigger on prompts like "generate terraform for my auth0 tenant", "reverse engineer auth0 to terraform", "structure my auth0 terraform".
+description: Use when you want to reverse-engineer an active Auth0 tenant into a structured, multi-environment Terraform project for replicating that tenant into new empty tenants. Runs `auth0 tf generate`, then restructures the flat output into a flat `modules/` directory (one `for_each` block per resource type with typed map variables), per-environment `envs/` directories, comment-scaffolded secrets.tf (supports Azure KV, AWS SM, GitHub Actions, env vars), computed-secret outputs, extracted action/DB-script files, and an optional Azure pipeline. Trigger on prompts like "generate terraform for my auth0 tenant", "reverse engineer auth0 to terraform", "structure my auth0 terraform".
 ---
 
 # Auth0 → Terraform Project Generator
@@ -43,7 +43,7 @@ unset AUTH0_API_TOKEN                         # api_token conflicts with client_
 - These are read-only credentials for export; they are NOT written into the
   generated project (each env supplies its own provider creds via tfvars/KV).
 
-#### How to obtain the credentials from the user (do this BEFORE the five questions)
+#### How to obtain the credentials from the user (do this BEFORE the four questions)
 
 The agent's shell does not inherit env vars the user exported in their own
 terminal (each command runs a fresh shell). A pasted client secret also persists
@@ -78,20 +78,12 @@ in order of preference:
 Ask which option they prefer; do not assume. If a complete `auth0_generated.tf`
 already exists from a prior run, skip elicitation and use it.
 
-## Ask these five questions (one message, in order)
+## Ask these four questions (one message, in order)
 
 1. Environment name for this active tenant (e.g. `dev`, `staging`, `prod`).
-2. KV provider for secrets — **only `azure` (Azure Key Vault) is currently supported.**
-   If the user asks about AWS Secrets Manager, tell them it is not yet implemented and
-   proceed only if they confirm Azure is acceptable.
-3. Other environment names to scaffold as empty skeletons (comma-separated, may be blank).
-4. CI/CD pipeline — **only `azure-pipelines` is currently supported.**
-   Present the options as:
-   - `azure-pipelines` — generates a full pipeline with AzureKeyVault@2 secret injection
-   - `none` — skip pipeline generation, wire CI/CD manually
-   If the user asks for `github-actions` or `gitlab-ci`, tell them those are not yet
-   supported and ask whether they want `none` instead.
-5. **Output path** — full absolute path where the generated Terraform project should be
+2. Other environment names to scaffold as empty skeletons (comma-separated, may be blank).
+3. **State backend** — `azurerm`, `s3`, `gcs`, or `local`. Suggest `local` if unsure — it can be changed later.
+4. **Output path** — full absolute path where the generated Terraform project should be
    written (e.g. `~/projects/rclb-terraform`). No default — always ask. Use this path
    as `--out` in the transformer step.
 
@@ -125,17 +117,16 @@ already exists from a prior run, skip elicitation and use it.
    A per-resource error after this is fine; the config is written during the plan
    graph walk. Verify the file now exists before continuing.
 2. Run the transformer (from the skill directory), passing the user's output path
-   from question 5 as `--out`. Expand `~` before passing — the transformer runs
+   from question 4 as `--out`. Expand `~` before passing — the transformer runs
    from the skill dir, so relative paths resolve there, not the user's cwd:
    ```bash
    OUT=$(eval echo "<user-supplied-path>")   # expands ~ correctly
-   python3 -m scripts.auth0tf.cli \
+   python3 -m scripts.auth0tf.cli transform \
      --input /tmp/auth0tf-raw \
      --out "$OUT" \
      --env <env> \
-     --kv <azure|aws> \
-     --other-envs "<comma,separated>" \
-     --cicd <choice>
+     --backend <azurerm|s3|gcs|local> \
+     --other-envs "<comma,separated>"
    ```
 3. Write a `.gitignore` to `<out>/.gitignore`:
    ```
@@ -177,6 +168,23 @@ already exists from a prior run, skip elicitation and use it.
 4. If `terraform` is installed, run `terraform -chdir=auth0-terraform/envs/<env> init -backend=false`
    then `terraform validate`. Report any errors.
 
+## Add CI/CD Pipeline (optional)
+
+After generation and validation succeed, ask the user:
+
+> "Add a CI/CD pipeline now? Options: `azure-pipelines` (generates azure-pipelines.yml with AzureKeyVault@2 secret injection) or `none` (skip — wire CI/CD manually later)."
+
+If the user chooses `azure-pipelines`, run:
+
+```bash
+python3 -m scripts.auth0tf.cli pipeline \
+  --project-dir "$OUT" \
+  --envs "<comma,separated,envs>" \
+  --cicd azure-pipelines
+```
+
+If `none`, skip entirely. The pipeline can always be added later by running the `pipeline` subcommand.
+
 ## Project Context File
 
 After generation, ask the user two questions:
@@ -207,25 +215,20 @@ Terraform project generated from <tenant-domain>. Awaiting variable group popula
 ## What's done
 - Generated Terraform project from <tenant-domain> (<N> resources across <M> resource types)
 - Environments scaffolded: <list>
-- KV provider: <azure|aws>
+- Secrets wiring: <azure-kv|aws-sm|github-actions|env-vars>
 - CI/CD: <pipeline type or none>
 
 ## What's in progress
 - Nothing — project generated, needs pipeline/KV wiring before first apply
 
 ## Decisions made
-- Secrets injected via pipeline env vars, not hardcoded in tfvars
-- auth0_domain stored per-env in Key Vault (not in shared variable group)
+- Secrets wired via comment scaffolds in secrets.tf, not hardcoded in tfvars
 - terraform.tfvars committed (non-secret config only)
 - .terraform.lock.hcl committed (provider version reproducibility)
 
 ## Next / backlog (ordered)
-1. Populate variable group with: azureServiceConnection, kvName<Env> for each environment
-2. Add these secrets to each env's Key Vault:
-   - auth0-domain
-   - auth0-client-id
-   - auth0-client-secret
-   - any additional secrets required by your modules
+1. Wire secrets using your chosen approach (see `secrets.tf` comment scaffolds)
+2. If using Azure Pipelines: populate variable group with azureServiceConnection, kvName<Env> per env
 3. Run pipeline plan stage for first env — verify expected adds (state is empty on first run)
 4. Review plan output, then run apply
 5. Repeat plan → apply for remaining environments
@@ -254,38 +257,27 @@ After completing any significant implementation (plan step, apply, decision):
 ## Report
 
 Summarize: resource counts per type, environments created (populated vs skeleton),
-KV provider used, whether a pipeline was generated, and any unresolved references
+secrets wiring approach chosen, whether a pipeline was generated, and any unresolved references
 flagged for manual review (from the CLI output / README "Manual review needed").
 
-## Azure Pipelines — variable group vs Key Vault split
+## Secrets wiring
 
-When `--cicd azure-pipelines` is used, the generated pipeline uses a shared
-variable group. The **variable group is env-agnostic** — it must NOT hold any
-value that differs per environment.
+The generated `secrets.tf` contains comment scaffolds showing how to wire secrets for each resource type. Choose the approach that fits your infrastructure:
 
-**Variable group** — env-agnostic values only:
-- `azureServiceConnection` — Azure DevOps service connection name
-- `kvName<Env>` — one entry per environment (e.g. `kvNameDev`, `kvNameProd`)
+- **Azure Key Vault** — add `azurerm_key_vault_secret` data sources (template in comments)
+- **AWS Secrets Manager** — add `aws_secretsmanager_secret_version` data sources (template in comments)
+- **GitHub Actions** — inject via `TF_VAR_<type>_secrets` env vars in your workflow
+- **Any CI / local** — `export TF_VAR_<type>_secrets='{"key":"value"}'`
 
-**Each env's Key Vault** — every per-env secret. At minimum:
-- `auth0-domain` → `TF_VAR_auth0_domain`
-- `auth0-client-id` → `TF_VAR_auth0_client_id`
-- `auth0-client-secret` → `TF_VAR_auth0_client_secret`
-- Any additional secrets your modules require (e.g. email provider credentials,
-  custom connection keys) — add them to `SecretsFilter` and inject as `TF_VAR_*`
-  in the `env:` block of the relevant plan/apply steps.
-
-> [!IMPORTANT]
-> `auth0_domain` is per-environment. **Never put it in the variable group.**
-> It must be stored in each env's Key Vault as `auth0-domain` and injected via
-> the `AzureKeyVault@2` task as `TF_VAR_auth0_domain: $(auth0-domain)` in the
-> `env:` block of every plan/apply script step — one per stage.
+Auth0-generated secrets (client secrets, signing keys) live in Terraform state and do not need injection.
 
 ## Notes
 
 - This skill replicates to NEW tenants. Auth0-generated secrets (client secrets,
-  signing secrets) are NOT set — they appear as module outputs to push into KV
-  after the first apply.
+  signing keys) stay in Terraform state — no KV injection needed for these.
+- CI/CD pipeline generation is decoupled from the main transform. The `transform`
+  subcommand never generates a pipeline; use the separate `pipeline` subcommand
+  (or the "Add CI/CD Pipeline" step above) to add one after generation.
 - Inter-resource ID references are rewired to Terraform references automatically;
   any that could not be resolved are listed for manual review.
 - Built-in Auth0 resource servers — the **Management API** (`/api/v2/`) and the
