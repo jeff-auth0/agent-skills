@@ -1,6 +1,6 @@
 ---
 name: auth0-terraform
-description: Use when you want to reverse-engineer an active Auth0 tenant into a structured, multi-environment Terraform project for replicating that tenant into new empty tenants. Runs `auth0 tf generate`, then restructures the flat output into a flat `modules/` directory (one `for_each` block per resource type with typed map variables), per-environment `envs/` directories, comment-scaffolded secrets.tf (supports Azure KV, AWS SM, GitHub Actions, env vars), computed-secret outputs, extracted action/DB-script files, and an optional Azure pipeline. Trigger on prompts like "generate terraform for my auth0 tenant", "reverse engineer auth0 to terraform", "structure my auth0 terraform".
+description: Use when you want to reverse-engineer an active Auth0 tenant into a structured, multi-environment Terraform project for replicating that tenant into new empty tenants. Runs `auth0 tf generate`, then restructures the flat output into a flat `modules/` directory (one `for_each` block per resource type with typed map variables), per-environment `envs/` directories, comment-scaffolded `secrets.tf` (injection templates for Azure KV, AWS SM, GitHub Actions, or env vars — no binding generated automatically), extracted action/DB-script files, and an optional Azure Pipelines YAML (only Azure Pipelines supported; GitHub Actions and GitLab CI not yet supported). Trigger on prompts like "generate terraform for my auth0 tenant", "reverse engineer auth0 to terraform", "structure my auth0 terraform".
 ---
 
 # Auth0 → Terraform Project Generator
