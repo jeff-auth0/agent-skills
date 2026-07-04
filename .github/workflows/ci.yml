@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        working-directory: auth0-terraform
+        run: pip install -e ".[dev]"
+
+      - name: Lint (ruff)
+        working-directory: auth0-terraform
+        run: |
+          pip install ruff
+          ruff check scripts/ tests/
+
+      - name: Test
+        working-directory: auth0-terraform
+        run: pytest -v
+
+  terraform:
+    name: Terraform fmt
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.9"
+
+      - name: fmt check
+        working-directory: auth0-terraform
+        run: |
+          if ls envs/*/main.tf 2>/dev/null; then
+            terraform fmt -check -recursive envs/ modules/
+          else
+            echo "No generated envs to check — skipping fmt"
+          fi

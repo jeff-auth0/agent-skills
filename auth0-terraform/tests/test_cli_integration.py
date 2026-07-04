@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from auth0tf.cli import run
+from auth0tf.cli import main, run
 
 FIX = Path(__file__).parent / "fixtures"
 
@@ -11,7 +11,6 @@ def test_end_to_end_generates_full_tree(tmp_path):
         input_path=str(FIX / "refs_tenant.tf"),
         out_dir=str(out),
         env="dev",
-        kv="azure",
         other_envs=["staging"],
         cicd="azure-pipelines",
     )
@@ -35,5 +34,25 @@ def test_end_to_end_generates_full_tree(tmp_path):
 def test_cicd_none_skips_pipeline(tmp_path):
     out = tmp_path / "p"
     run(input_path=str(FIX / "simple_tenant.tf"), out_dir=str(out),
-        env="dev", kv="aws", other_envs=[], cicd="none")
+        env="dev", other_envs=[], cicd="none")
     assert not (out / "azure-pipelines.yml").exists()
+
+
+def test_transform_subcommand_no_pipeline(tmp_path):
+    out = tmp_path / "p"
+    main(["transform", "--input", str(FIX / "simple_tenant.tf"),
+          "--out", str(out), "--env", "dev"])
+    assert not (out / "azure-pipelines.yml").exists()
+    assert (out / "modules").exists()
+    assert (out / "envs" / "dev").exists()
+
+
+def test_pipeline_subcommand_generates_yml(tmp_path):
+    main(["pipeline", "--project-dir", str(tmp_path),
+          "--envs", "dev,staging", "--cicd", "azure-pipelines"])
+    yml = (tmp_path / "azure-pipelines.yml")
+    assert yml.exists()
+    txt = yml.read_text()
+    assert "stage: validate" in txt
+    assert "plan_dev" in txt
+    assert "plan_staging" in txt

@@ -14,7 +14,7 @@ FIX = Path(__file__).parent / "fixtures"
 def test_generated_env_passes_terraform_validate(tmp_path):
     out = tmp_path / "proj"
     run(input_path=str(FIX / "simple_tenant.tf"), out_dir=str(out),
-        env="dev", kv="azure", other_envs=[], cicd="none")
+        env="dev", other_envs=[], cicd="none")
     env_dir = out / "envs" / "dev"
     subprocess.run(["terraform", "init", "-backend=false"],
                    cwd=env_dir, check=True, capture_output=True)

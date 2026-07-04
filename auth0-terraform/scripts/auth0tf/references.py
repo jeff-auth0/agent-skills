@@ -15,7 +15,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from .model import Tenant
+from .model import Resource, Tenant
 
 
 @dataclass(frozen=True)

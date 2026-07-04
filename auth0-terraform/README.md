@@ -8,9 +8,9 @@ Reverse-engineers an active Auth0 tenant into a clean, multi-environment Terrafo
 2. Transforms the flat output into a structured project:
    - `modules/` — one `for_each` block per resource type
    - `envs/` — per-environment directories (populated + skeleton stubs)
-   - `.gitignore` — pre-configured for Terraform + secrets
-   - `PROJECT_CONTEXT.md` + `CLAUDE.md` — session continuity for future agents
-3. Optionally generates an Azure DevOps pipeline with Key Vault secret injection (`azure-pipelines` only — GitHub Actions and GitLab CI not yet supported)
+   - `secrets.tf` — comment scaffolds for secret injection (choose Azure KV, AWS SM, GitHub Actions, or env vars)
+   - `.gitignore`, `PROJECT_CONTEXT.md`, `CLAUDE.md`
+3. Optionally generates an Azure DevOps pipeline YAML as a separate step (Azure Pipelines only — GitHub Actions and GitLab CI not yet supported)
 
 ## Install
 
@@ -35,8 +35,9 @@ reverse engineer auth0 to terraform
 The agent will:
 - Confirm the active tenant
 - Ask for credentials securely (env file recommended — secret never enters transcript)
-- Ask 4 questions: environment name, KV provider (`azure` only), other envs to scaffold, CI/CD pipeline (`azure-pipelines` or `none`)
+- Ask 3 questions: environment name, other envs to scaffold, output path
 - Generate the project, validate it, and write a `PROJECT_CONTEXT.md` for continuity
+- Optionally generate an `azure-pipelines.yml` as a follow-up step (Azure Pipelines only)
 
 ## Prerequisites
 
@@ -58,7 +59,8 @@ auth0-terraform/
 │   ├── dev/                  # populated from active tenant
 │   │   ├── main.tf
 │   │   ├── variables.tf
-│   │   └── terraform.tfvars
+│   │   ├── terraform.tfvars
+│   │   └── secrets.tf        # injection scaffolds
 │   ├── preprod/              # empty skeleton
 │   └── prod/                 # empty skeleton
 ├── azure-pipelines.yml       # if azure-pipelines selected
@@ -67,30 +69,28 @@ auth0-terraform/
 └── CLAUDE.md
 ```
 
-## Azure Pipelines — secret wiring
+## Secrets wiring
 
-The generated pipeline injects secrets from per-environment Key Vaults via `AzureKeyVault@2`.
+`secrets.tf` in each populated env contains comment templates showing how to wire external secrets (social connection keys, action secrets, email provider credentials). **No secrets binding is generated automatically** — you choose the approach and implement it yourself.
 
-**Variable group** — env-agnostic values only:
+Each secret variable in `secrets.tf` includes copy-paste templates for:
 
-| Variable | Description |
+| Approach | How |
 |---|---|
-| `azureServiceConnection` | Azure DevOps service connection name |
-| `kvName<Env>` | Key Vault name for each environment (one entry per env) |
+| Azure Key Vault | `azurerm_key_vault_secret` data source (template in comments) |
+| AWS Secrets Manager | `aws_secretsmanager_secret_version` data source (template in comments) |
+| GitHub Actions | `TF_VAR_<type>_secrets` env var in workflow (template in comments) |
+| Any CI / local | `export TF_VAR_<type>_secrets='{"key":"value"}'` |
 
-**Each env's Key Vault** — minimum required secrets:
+Auth0-generated secrets (client secrets, signing keys) stay in Terraform state — no injection needed.
 
-| Secret name | Terraform variable |
-|---|---|
-| `auth0-domain` | `TF_VAR_auth0_domain` |
-| `auth0-client-id` | `TF_VAR_auth0_client_id` |
-| `auth0-client-secret` | `TF_VAR_auth0_client_secret` |
+## CI/CD pipeline
 
-Add any additional secrets your modules require (e.g. email provider credentials, custom connection keys) to each env's vault and inject them as `TF_VAR_*` in the pipeline.
+Optional `azure-pipelines.yml` generated on request. Includes validate, plan, and apply stages per environment. Apply on first env is automatic on merge to `main`; subsequent envs require approval via Azure DevOps Environments.
 
-> `auth0-domain` is per-environment — it must live in Key Vault, never in the shared variable group.
+> **GitHub Actions and GitLab CI are not yet supported.** Wire those pipelines manually using the `TF_VAR_*` injection pattern from `secrets.tf`.
 
 ## What is not replicated
 
 - Built-in Auth0 resource servers (Management API, My Account API) — auto-provisioned by every tenant
-- Auth0-generated secrets (client secrets, signing keys) — appear as outputs to push into KV after first apply
+- Auth0-generated secrets (client_id, client_secret, signing_keys) — stay in Terraform state, not injected

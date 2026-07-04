@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 def emit_readme(out_dir: Path, counts: dict[str, int], envs: list[str],
-                kv: str, unresolved: list[str],
+                unresolved: list[str],
                 generic_types: list[str] | None = None,
                 excluded: list[str] | None = None) -> None:
     out_dir = Path(out_dir)
@@ -28,18 +28,9 @@ def emit_readme(out_dir: Path, counts: dict[str, int], envs: list[str],
         "## Secrets",
         "",
     ]
-    if kv == "azure":
-        lines += [
-            "Input secrets are read from Azure Key Vault by `secrets.tf`.",
-            "Create one secret per resource using the convention "
-            "`auth0-<resource-key>-secret`.",
-        ]
-    else:
-        lines += [
-            "Input secrets are read from AWS Secrets Manager by `secrets.tf`.",
-            "Create one secret per resource using the convention "
-            "`auth0/<resource-key>/secret`.",
-        ]
+    lines += [
+        "Input secrets are read from your configured secrets backend by `secrets.tf`.",
+    ]
     lines += [
         "",
         "Auth0-generated credentials (client_id, client_secret, signing secrets) "

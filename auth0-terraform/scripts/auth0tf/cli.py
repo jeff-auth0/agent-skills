@@ -26,7 +26,7 @@ from .references import (
 )
 
 
-def run(input_path: str, out_dir: str, env: str, kv: str,
+def run(input_path: str, out_dir: str, env: str,
         other_envs: list[str], cicd: str) -> dict:
     out = Path(out_dir)
     modules = out / "modules"
@@ -49,43 +49,65 @@ def run(input_path: str, out_dir: str, env: str, kv: str,
 
     generic_types = emit_modules(tenant, modules)
     emit_literal_resources(tenant, modules)
-    emit_env(tenant, out / "envs" / env, env=env, kv=kv, populated=True)
+    emit_env(tenant, out / "envs" / env, env=env, populated=True)
     for other in other_envs:
-        emit_env(tenant, out / "envs" / other, env=other, kv=kv, populated=False)
+        emit_env(tenant, out / "envs" / other, env=other, populated=False)
 
     all_envs = [env] + list(other_envs)
     if cicd == "azure-pipelines":
         emit_azure_pipeline(out, envs=all_envs)
 
-    emit_readme(out, counts=counts, envs=all_envs, kv=kv, unresolved=unresolved,
+    emit_readme(out, counts=counts, envs=all_envs, unresolved=unresolved,
                 generic_types=generic_types, excluded=excluded)
     return {"counts": counts, "unresolved": unresolved, "envs": all_envs,
             "generic_types": generic_types, "excluded": excluded}
 
 
+def emit_pipeline_cmd(project_dir: str, envs: list[str], cicd: str) -> None:
+    out = Path(project_dir)
+    if cicd == "azure-pipelines":
+        emit_azure_pipeline(out, envs=envs)
+    elif cicd in ("github-actions", "gitlab-ci"):
+        print(f"Pipeline generation for {cicd} is not yet supported — scaffold manually.")
+
+
 def main(argv=None) -> None:
     p = argparse.ArgumentParser(description="Restructure auth0 tf generate output.")
-    p.add_argument("--input", required=True, help="dir/file of generated .tf")
-    p.add_argument("--out", required=True, help="output project dir")
-    p.add_argument("--env", required=True, help="active tenant env name")
-    p.add_argument("--kv", choices=["azure", "aws"], required=True)
-    p.add_argument("--other-envs", default="", help="comma-separated skeleton envs")
-    p.add_argument("--cicd", choices=["azure-pipelines", "github-actions",
-                                      "gitlab-ci", "none"], default="none")
+    sub = p.add_subparsers(dest="command")
+
+    t = sub.add_parser("transform", help="Parse raw tf output into structured project")
+    t.add_argument("--input", required=True)
+    t.add_argument("--out", required=True)
+    t.add_argument("--env", required=True)
+    t.add_argument("--other-envs", default="")
+
+    pl = sub.add_parser("pipeline", help="Generate CI/CD pipeline file")
+    pl.add_argument("--project-dir", required=True)
+    pl.add_argument("--envs", required=True, help="comma-separated env names")
+    pl.add_argument("--cicd", choices=["azure-pipelines", "github-actions", "gitlab-ci", "none"],
+                    required=True)
+
     a = p.parse_args(argv)
-    others = [e.strip() for e in a.other_envs.split(",") if e.strip()]
-    result = run(a.input, a.out, a.env, a.kv, others, a.cicd)
-    if a.cicd in ("github-actions", "gitlab-ci"):
-        print(f"Pipeline generation for {a.cicd} is not yet supported — "
-              "scaffold manually.")
-    print(f"Done. Resources: {result['counts']}. "
-          f"Unresolved refs: {result['unresolved']}.")
-    if result.get("excluded"):
-        print("Excluded (auto-provisioned by Auth0, not replicated): "
-              + "; ".join(result["excluded"]))
-    if result.get("generic_types"):
-        print("Auto-handled (generic emission, review naming/structure): "
-              + ", ".join(sorted(result["generic_types"])))
+
+    if a.command == "transform":
+        others = [e.strip() for e in a.other_envs.split(",") if e.strip()]
+        result = run(a.input, a.out, a.env, others, cicd="none")
+        print(f"Done. Resources: {result['counts']}. Unresolved refs: {result['unresolved']}.")
+        if result.get("excluded"):
+            print("Excluded (auto-provisioned by Auth0, not replicated): "
+                  + "; ".join(result["excluded"]))
+        if result.get("generic_types"):
+            print("Auto-handled (generic emission, review naming/structure): "
+                  + ", ".join(sorted(result["generic_types"])))
+
+    elif a.command == "pipeline":
+        envs = [e.strip() for e in a.envs.split(",") if e.strip()]
+        emit_pipeline_cmd(a.project_dir, envs, a.cicd)
+        if a.cicd != "none":
+            print(f"Pipeline generated: {a.cicd}")
+
+    else:
+        p.print_help()
 
 
 if __name__ == "__main__":
