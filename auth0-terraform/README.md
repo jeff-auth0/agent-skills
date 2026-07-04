@@ -10,7 +10,7 @@ Reverse-engineers an active Auth0 tenant into a clean, multi-environment Terrafo
    - `envs/` — per-environment directories (populated + skeleton stubs)
    - `secrets.tf` — comment scaffolds for secret injection (choose Azure KV, AWS SM, GitHub Actions, or env vars)
    - `.gitignore`, `PROJECT_CONTEXT.md`, `CLAUDE.md`
-3. Optionally generates a CI/CD pipeline as a separate step (`azure-pipelines` supported)
+3. Optionally generates an Azure DevOps pipeline YAML as a separate step (Azure Pipelines only — GitHub Actions and GitLab CI not yet supported)
 
 ## Install
 
@@ -35,9 +35,9 @@ reverse engineer auth0 to terraform
 The agent will:
 - Confirm the active tenant
 - Ask for credentials securely (env file recommended — secret never enters transcript)
-- Ask 4 questions: environment name, other envs to scaffold, state backend, output path
+- Ask 3 questions: environment name, other envs to scaffold, output path
 - Generate the project, validate it, and write a `PROJECT_CONTEXT.md` for continuity
-- Optionally generate a CI/CD pipeline as a follow-up step
+- Optionally generate an `azure-pipelines.yml` as a follow-up step (Azure Pipelines only)
 
 ## Prerequisites
 
@@ -71,18 +71,24 @@ auth0-terraform/
 
 ## Secrets wiring
 
-`secrets.tf` in each populated env contains ready-to-use comment templates for wiring external secrets (social connection keys, action secrets, email provider credentials).
+`secrets.tf` in each populated env contains comment templates showing how to wire external secrets (social connection keys, action secrets, email provider credentials). **No secrets binding is generated automatically** — you choose the approach and implement it yourself.
 
-Choose your approach:
+Each secret variable in `secrets.tf` includes copy-paste templates for:
 
 | Approach | How |
 |---|---|
-| Azure Key Vault | Uncomment `azurerm_key_vault_secret` data source blocks in `secrets.tf` |
-| AWS Secrets Manager | Uncomment `aws_secretsmanager_secret_version` data source blocks in `secrets.tf` |
-| GitHub Actions | Set `TF_VAR_<type>_secrets` env vars in your workflow (template in `secrets.tf`) |
+| Azure Key Vault | `azurerm_key_vault_secret` data source (template in comments) |
+| AWS Secrets Manager | `aws_secretsmanager_secret_version` data source (template in comments) |
+| GitHub Actions | `TF_VAR_<type>_secrets` env var in workflow (template in comments) |
 | Any CI / local | `export TF_VAR_<type>_secrets='{"key":"value"}'` |
 
 Auth0-generated secrets (client secrets, signing keys) stay in Terraform state — no injection needed.
+
+## CI/CD pipeline
+
+Optional `azure-pipelines.yml` generated on request. Includes validate, plan, and apply stages per environment. Apply on first env is automatic on merge to `main`; subsequent envs require approval via Azure DevOps Environments.
+
+> **GitHub Actions and GitLab CI are not yet supported.** Wire those pipelines manually using the `TF_VAR_*` injection pattern from `secrets.tf`.
 
 ## What is not replicated
 
