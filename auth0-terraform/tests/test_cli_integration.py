@@ -41,7 +41,7 @@ def test_cicd_none_skips_pipeline(tmp_path):
 def test_transform_subcommand_no_pipeline(tmp_path):
     out = tmp_path / "p"
     main(["transform", "--input", str(FIX / "simple_tenant.tf"),
-          "--out", str(out), "--env", "dev", "--backend", "s3"])
+          "--out", str(out), "--env", "dev"])
     assert not (out / "azure-pipelines.yml").exists()
     assert (out / "modules").exists()
     assert (out / "envs" / "dev").exists()

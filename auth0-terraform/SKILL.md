@@ -43,7 +43,7 @@ unset AUTH0_API_TOKEN                         # api_token conflicts with client_
 - These are read-only credentials for export; they are NOT written into the
   generated project (each env supplies its own provider creds via tfvars/KV).
 
-#### How to obtain the credentials from the user (do this BEFORE the four questions)
+#### How to obtain the credentials from the user (do this BEFORE the three questions)
 
 The agent's shell does not inherit env vars the user exported in their own
 terminal (each command runs a fresh shell). A pasted client secret also persists
@@ -78,12 +78,11 @@ in order of preference:
 Ask which option they prefer; do not assume. If a complete `auth0_generated.tf`
 already exists from a prior run, skip elicitation and use it.
 
-## Ask these four questions (one message, in order)
+## Ask these three questions (one message, in order)
 
 1. Environment name for this active tenant (e.g. `dev`, `staging`, `prod`).
 2. Other environment names to scaffold as empty skeletons (comma-separated, may be blank).
-3. **State backend** — `azurerm`, `s3`, `gcs`, or `local`. Suggest `local` if unsure — it can be changed later.
-4. **Output path** — full absolute path where the generated Terraform project should be
+3. **Output path** — full absolute path where the generated Terraform project should be
    written (e.g. `~/projects/rclb-terraform`). No default — always ask. Use this path
    as `--out` in the transformer step.
 
@@ -125,7 +124,6 @@ already exists from a prior run, skip elicitation and use it.
      --input /tmp/auth0tf-raw \
      --out "$OUT" \
      --env <env> \
-     --backend <azurerm|s3|gcs|local> \
      --other-envs "<comma,separated>"
    ```
 3. Write a `.gitignore` to `<out>/.gitignore`:

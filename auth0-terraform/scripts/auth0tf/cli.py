@@ -27,7 +27,7 @@ from .references import (
 
 
 def run(input_path: str, out_dir: str, env: str,
-        other_envs: list[str], cicd: str, backend: str = "local") -> dict:
+        other_envs: list[str], cicd: str) -> dict:
     out = Path(out_dir)
     modules = out / "modules"
     modules.mkdir(parents=True, exist_ok=True)
@@ -49,9 +49,9 @@ def run(input_path: str, out_dir: str, env: str,
 
     generic_types = emit_modules(tenant, modules)
     emit_literal_resources(tenant, modules)
-    emit_env(tenant, out / "envs" / env, env=env, populated=True, backend=backend)
+    emit_env(tenant, out / "envs" / env, env=env, populated=True)
     for other in other_envs:
-        emit_env(tenant, out / "envs" / other, env=other, populated=False, backend=backend)
+        emit_env(tenant, out / "envs" / other, env=other, populated=False)
 
     all_envs = [env] + list(other_envs)
     if cicd == "azure-pipelines":
@@ -79,7 +79,6 @@ def main(argv=None) -> None:
     t.add_argument("--input", required=True)
     t.add_argument("--out", required=True)
     t.add_argument("--env", required=True)
-    t.add_argument("--backend", choices=["azurerm", "s3", "gcs", "local"], default="local")
     t.add_argument("--other-envs", default="")
 
     pl = sub.add_parser("pipeline", help="Generate CI/CD pipeline file")
@@ -92,7 +91,7 @@ def main(argv=None) -> None:
 
     if a.command == "transform":
         others = [e.strip() for e in a.other_envs.split(",") if e.strip()]
-        result = run(a.input, a.out, a.env, others, cicd="none", backend=a.backend)
+        result = run(a.input, a.out, a.env, others, cicd="none")
         print(f"Done. Resources: {result['counts']}. Unresolved refs: {result['unresolved']}.")
         if result.get("excluded"):
             print("Excluded (auto-provisioned by Auth0, not replicated): "

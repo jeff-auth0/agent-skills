@@ -15,40 +15,38 @@ from .hclgen import render_value
 from .model import Tenant
 from .secrets import classify_field
 
-BACKEND_STUBS = {
-    "azurerm": """terraform {
-  backend "azurerm" {
-    # TODO: set these or pass via -backend-config at init time
-    # resource_group_name  = ""
-    # storage_account_name = ""
-    # container_name       = "tfstate"
-    # key                  = "%(env)s.auth0.tfstate"
-  }
+BACKEND_STUB = """terraform {
+  # TODO: configure a remote backend before running terraform init.
+  # Uncomment and fill in ONE of the blocks below.
+
+  # --- Azure Blob Storage (azurerm) ---
+  # backend "azurerm" {
+  #   resource_group_name  = "my-rg"
+  #   storage_account_name = "mytfstate"
+  #   container_name       = "tfstate"
+  #   key                  = "auth0.tfstate"
+  # }
+
+  # --- AWS S3 ---
+  # backend "s3" {
+  #   bucket = "my-tf-state"
+  #   key    = "auth0/terraform.tfstate"
+  #   region = "us-east-1"
+  # }
+
+  # --- Google Cloud Storage (gcs) ---
+  # backend "gcs" {
+  #   bucket = "my-tf-state"
+  #   prefix = "auth0"
+  # }
+
+  # --- Terraform Cloud / HCP Terraform ---
+  # backend "remote" {
+  #   organization = "my-org"
+  #   workspaces { name = "auth0" }
+  # }
 }
-""",
-    "s3": """terraform {
-  backend "s3" {
-    # TODO: set these or pass via -backend-config at init time
-    # bucket = ""
-    # key    = "%(env)s/auth0.tfstate"
-    # region = ""
-  }
-}
-""",
-    "gcs": """terraform {
-  backend "gcs" {
-    # TODO: set these or pass via -backend-config at init time
-    # bucket = ""
-    # prefix = "auth0"
-  }
-}
-""",
-    "local": """terraform {
-  # TODO: configure remote backend
-  # backend "azurerm" {} or backend "s3" {} etc.
-}
-""",
-}
+"""
 
 
 def _present(tenant: Tenant) -> list[tuple[str, str, list]]:
@@ -312,16 +310,13 @@ def _variables_tf(present, populated: bool) -> str:
     return "\n".join(parts)
 
 
-def emit_env(tenant: Tenant, env_dir: Path, env: str, populated: bool, backend: str = "local") -> None:
+def emit_env(tenant: Tenant, env_dir: Path, env: str, populated: bool) -> None:
     env_dir = Path(env_dir)
     env_dir.mkdir(parents=True, exist_ok=True)
     present = _present(tenant)
 
-    stub = BACKEND_STUBS.get(backend, BACKEND_STUBS["local"])
-    backend_content = stub % {"env": env} if backend in ("azurerm", "s3") else stub
-
     (env_dir / "providers.tf").write_text(_providers())
-    (env_dir / "backend.tf").write_text(backend_content)
+    (env_dir / "backend.tf").write_text(BACKEND_STUB)
     (env_dir / "main.tf").write_text(_main_tf(present, populated))
     (env_dir / "secrets.tf").write_text(_secrets_tf(present) if populated else
                                         "# TODO: wire secrets for this env.\n")

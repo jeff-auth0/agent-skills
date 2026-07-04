@@ -84,16 +84,11 @@ def test_env_action_kv_secrets_datasource_and_passthrough(tmp_path):
     assert "secrets" in tfvars and "kv_secrets" in tfvars
 
 
-def test_azurerm_backend_stub(tmp_path):
-    emit_env(_tenant(), tmp_path, env="dev", populated=True, backend="azurerm")
+def test_backend_stub_has_all_examples(tmp_path):
+    emit_env(_tenant(), tmp_path, env="dev", populated=True)
     backend = (tmp_path / "backend.tf").read_text()
-    assert 'backend "azurerm"' in backend
-
-
-def test_s3_backend_stub(tmp_path):
-    emit_env(_tenant(), tmp_path, env="dev", populated=True, backend="s3")
-    backend = (tmp_path / "backend.tf").read_text()
-    assert 'backend "s3"' in backend
+    for provider in ('backend "azurerm"', 'backend "s3"', 'backend "gcs"', 'backend "remote"'):
+        assert provider in backend
 
 
 def test_env_wires_new_and_unknown_types(tmp_path):
