@@ -21,6 +21,11 @@ COMPUTED_FIELDS: set[tuple[str, str]] = {
     # Auth0 generates/owns the client_credentials secret; let it sit in state
     # rather than injecting it from a key vault.
     ("auth0_client_credentials", "client_secret"),
+    # client_secret_wo is the write-only variant (Terraform 1.11+). When null,
+    # Auth0 auto-generates the secret on apply — same as client_secret above.
+    # client_secret_wo_version is a plain rotation counter, not a secret value.
+    ("auth0_client_credentials", "client_secret_wo"),
+    ("auth0_client_credentials", "client_secret_wo_version"),
 }
 
 # Fields whose names match secret-like tokens but are plain config values.

@@ -39,3 +39,18 @@ def test_client_credentials_secret_is_computed_not_input():
 def test_token_dialect_is_plain_not_secret():
     # token_dialect contains "token" but is a plain enum, not a secret.
     assert classify_field("auth0_resource_server", "token_dialect") == "plain"
+
+
+def test_client_secret_wo_is_computed():
+    # write-only variant — Auth0 auto-generates when null, never user-injected
+    assert classify_field("auth0_client_credentials", "client_secret_wo") == "computed"
+
+
+def test_client_secret_wo_version_is_computed():
+    # rotation counter, not a secret value
+    assert classify_field("auth0_client_credentials", "client_secret_wo_version") == "computed"
+
+
+def test_connection_client_secret_wo_still_input():
+    # social connection write-only secret IS user-supplied (Google/GitHub key)
+    assert classify_field("auth0_connection", "client_secret_wo") == "input"
