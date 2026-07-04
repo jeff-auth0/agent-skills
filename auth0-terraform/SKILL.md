@@ -29,7 +29,7 @@ Management API** with the full **`read:*`** scope set (the export only reads).
 This is the portable path — no keychain/token extraction.
 
 ```bash
-export AUTH0_DOMAIN=<tenant-domain>          # e.g. adica-dev-0.au.auth0.com
+export AUTH0_DOMAIN=<tenant-domain>          # e.g. my-tenant.us.auth0.com
 export AUTH0_CLIENT_ID=<m2m-client-id>
 export AUTH0_CLIENT_SECRET=<m2m-client-secret>
 unset AUTH0_API_TOKEN                         # api_token conflicts with client_id/secret
