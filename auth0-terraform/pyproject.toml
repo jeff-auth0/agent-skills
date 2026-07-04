@@ -6,7 +6,7 @@ requires-python = ">=3.11"
 dependencies = ["python-hcl2>=4.3.0"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "ruff>=0.4"]
 
 [tool.setuptools.packages.find]
 where = ["scripts"]

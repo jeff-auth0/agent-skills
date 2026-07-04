@@ -1,4 +1,3 @@
-from pathlib import Path
 
 from auth0tf.model import Resource, Tenant
 from auth0tf.emit_modules import emit_literal_resources, emit_modules

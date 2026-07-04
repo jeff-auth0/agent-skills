@@ -1,4 +1,3 @@
-from pathlib import Path
 
 from auth0tf.emit_readme import emit_readme
 

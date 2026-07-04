@@ -111,7 +111,7 @@ def _nested_ref_block(field: str, items_sample, ref) -> list[str]:
     width = max((len(k) for k in sub_keys), default=1)
     lines = [f'  dynamic "{field}" {{',
              f'    for_each = coalesce(try(each.value.{field}, null), [])',
-             f'    content {{']
+             '    content {']
     for sk in sub_keys:
         if sk == ref.inner:
             lines.append(f'      {sk.ljust(width)} = '

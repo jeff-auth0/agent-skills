@@ -1,4 +1,3 @@
-from pathlib import Path
 
 from auth0tf.emit_pipeline import emit_azure_pipeline
 
