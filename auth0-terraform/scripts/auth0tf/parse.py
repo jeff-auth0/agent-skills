@@ -157,6 +157,19 @@ def _import_id_map(doc: dict) -> dict[str, str]:
     return out
 
 
+def parse_provider_version(input_path: str | Path, fallback: str = "1.49.0") -> str:
+    """Read auth0/auth0 provider version from .terraform.lock.hcl if present."""
+    lock = Path(input_path)
+    if lock.is_file():
+        lock = lock.parent
+    lock = lock / ".terraform.lock.hcl"
+    if not lock.exists():
+        return fallback
+    text = lock.read_text()
+    m = re.search(r'provider\s+"registry\.terraform\.io/auth0/auth0"\s*\{[^}]*version\s*=\s*"([^"]+)"', text, re.S)
+    return m.group(1) if m else fallback
+
+
 def parse_dir(path: str | Path) -> Tenant:
     path = Path(path)
     tenant = Tenant()

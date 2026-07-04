@@ -16,7 +16,7 @@ from .extract import (
     extract_form_bodies,
     scaffold_action_secrets,
 )
-from .parse import parse_dir
+from .parse import parse_dir, parse_provider_version
 from .references import (
     exclude_builtin_apis,
     rekey_client_grants,
@@ -32,6 +32,7 @@ def run(input_path: str, out_dir: str, env: str,
     modules = out / "modules"
     modules.mkdir(parents=True, exist_ok=True)
 
+    provider_version = parse_provider_version(input_path)
     tenant = parse_dir(input_path)
 
     scaffold_action_secrets(tenant)        # before extract_code: scan code for secrets.*
@@ -47,11 +48,11 @@ def run(input_path: str, out_dir: str, env: str,
     rewire_domain_logout_urls(tenant)      # after rewire: sentinel for client logout URLs
     rekey_client_grants(tenant)            # after rewire: stable human-readable grant keys
 
-    generic_types = emit_modules(tenant, modules)
+    generic_types = emit_modules(tenant, modules, provider_version=provider_version)
     emit_literal_resources(tenant, modules)
-    emit_env(tenant, out / "envs" / env, env=env, populated=True)
+    emit_env(tenant, out / "envs" / env, env=env, populated=True, provider_version=provider_version)
     for other in other_envs:
-        emit_env(tenant, out / "envs" / other, env=other, populated=False)
+        emit_env(tenant, out / "envs" / other, env=other, populated=False, provider_version=provider_version)
 
     all_envs = [env] + list(other_envs)
     if cicd == "azure-pipelines":

@@ -163,8 +163,15 @@ already exists from a prior run, skip elicitation and use it.
    Note: `terraform.tfvars` is **not** ignored — it contains non-secret config and
    is intentionally committed. `.terraform.lock.hcl` is **not** ignored — kept for
    provider version reproducibility.
-4. If `terraform` is installed, run `terraform -chdir=auth0-terraform/envs/<env> init -backend=false`
-   then `terraform validate`. Report any errors.
+4. Run `terraform validate` using the **bundled binary** that `auth0 tf generate` placed in the
+   output dir — not the system `terraform`. The auth0 CLI bundles its own older binary:
+   ```bash
+   cd /tmp/auth0tf-raw
+   ./terraform -chdir="$OUT/envs/<env>" init -backend=false
+   ./terraform -chdir="$OUT/envs/<env>" validate
+   ```
+   If system `terraform` is newer and compatible, it can be used instead — but prefer the bundled
+   binary to avoid version mismatch errors. Report any errors.
 
 ## Add CI/CD Pipeline (optional)
 

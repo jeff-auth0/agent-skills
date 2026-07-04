@@ -348,7 +348,7 @@ def _sparse_fields(resources) -> set[str]:
     return {k for k, n in counts.items() if n < total}
 
 
-def emit_modules(tenant: Tenant, modules_dir: Path) -> list[str]:
+def emit_modules(tenant: Tenant, modules_dir: Path, provider_version: str = "1.49.0") -> list[str]:
     """Emit one for_each module file per present resource type.
 
     Types in LITERAL_TYPE_MAP are skipped here (handled by emit_literal_resources).
@@ -619,7 +619,7 @@ def emit_modules(tenant: Tenant, modules_dir: Path) -> list[str]:
         '  required_providers {\n'
         '    auth0 = {\n'
         '      source  = "auth0/auth0"\n'
-        '      version = "= 1.49.0"\n'
+        f'      version = "= {provider_version}"\n'
         '    }\n'
         '  }\n'
         '}\n'

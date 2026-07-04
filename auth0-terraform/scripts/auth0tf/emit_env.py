@@ -65,11 +65,11 @@ def _present(tenant: Tenant) -> list[tuple[str, str, list]]:
     return out
 
 
-def _providers() -> str:
+def _providers(provider_version: str = "1.49.0") -> str:
     return (
         'terraform {\n'
         '  required_providers {\n'
-        '    auth0 = {\n      source  = "auth0/auth0"\n      version = "= 1.49.0"\n    }\n'
+        f'    auth0 = {{\n      source  = "auth0/auth0"\n      version = "= {provider_version}"\n    }}\n'
         '  }\n}\n\n'
         'provider "auth0" {\n'
         '  domain        = var.auth0_domain\n'
@@ -310,12 +310,12 @@ def _variables_tf(present, populated: bool) -> str:
     return "\n".join(parts)
 
 
-def emit_env(tenant: Tenant, env_dir: Path, env: str, populated: bool) -> None:
+def emit_env(tenant: Tenant, env_dir: Path, env: str, populated: bool, provider_version: str = "1.49.0") -> None:
     env_dir = Path(env_dir)
     env_dir.mkdir(parents=True, exist_ok=True)
     present = _present(tenant)
 
-    (env_dir / "providers.tf").write_text(_providers())
+    (env_dir / "providers.tf").write_text(_providers(provider_version))
     (env_dir / "backend.tf").write_text(BACKEND_STUB)
     (env_dir / "main.tf").write_text(_main_tf(present, populated))
     (env_dir / "secrets.tf").write_text(_secrets_tf(present) if populated else
