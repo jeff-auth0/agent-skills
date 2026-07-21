@@ -1,3 +1,5 @@
+import json
+import re
 from pathlib import Path
 
 from auth0tf.cli import main, run
@@ -29,6 +31,38 @@ def test_end_to_end_generates_full_tree(tmp_path):
     # but the client itself is driven by tfvars.
     tfvars = (out / "envs" / "dev" / "terraform.tfvars").read_text()
     assert "my_app" in tfvars
+
+
+def test_prompt_custom_text_and_custom_scripts_survive_full_pipeline(tmp_path):
+    # Regression test for the double-escaped-JSON bug: prompt_custom_text
+    # bodies and connection custom_scripts must reach terraform.tfvars with
+    # real newlines/quotes, not literal backslash-n/backslash-quote sequences
+    # that Terraform heredocs pass through verbatim (invalid JSON at plan time).
+    out = tmp_path / "p"
+    run(
+        input_path=str(FIX / "prompt_custom_text_and_scripts_tenant.tf"),
+        out_dir=str(out),
+        env="dev",
+        other_envs=[],
+        cicd="none",
+    )
+    tfvars = (out / "envs" / "dev" / "terraform.tfvars").read_text()
+    # A single backslash before n/" (JSON's own escaping of a real newline/quote
+    # inside a string value) is correct. Two consecutive backslashes is the
+    # double-escaping bug's signature — it should never appear.
+    assert "\\\\" not in tfvars
+
+    heredocs = re.findall(r"<<-(\w+)\n(.*?)\n\1", tfvars, re.S)
+    bodies = [body for _sentinel, body in heredocs if "signup-id" in body]
+    assert len(bodies) == 1
+    parsed = json.loads(bodies[0])
+    assert parsed == {
+        "signup-id": {
+            "description": "Sign up for an account.\nPlease continue.",
+            "title": 'Create your "account"',
+        }
+    }
+    assert "callback(null, user);" in tfvars
 
 
 def test_cicd_none_skips_pipeline(tmp_path):

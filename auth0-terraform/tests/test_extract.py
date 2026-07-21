@@ -167,16 +167,26 @@ def test_form_flow_body_cross_refs_wrapped_with_replace(tmp_path):
             in flow_expr)
 
 
-def test_extract_db_scripts(tmp_path):
+def test_extract_db_scripts_unescapes_in_place(tmp_path):
+    # `options` is an HCL block, so hcl2 parses it as a single-item list of
+    # dicts, not a plain dict — and the real attribute is snake_case
+    # `custom_scripts`, not `customScripts`. Bodies arrive HCL-escaped and must
+    # be unescaped IN PLACE (not extracted to files, unlike action code).
     t = Tenant()
-    t.add(Resource("auth0_connection", "my-db", "c1", {
+    t.add(Resource("auth0_connection", "my_db", "c1", {
         "name": "my-db",
-        "options": {"customScripts": {"login": "function login(){}",
-                                       "get_user": "function gu(){}"}},
-    }))
+        "options": [{
+            "custom_scripts": {
+                "login": "function login(user, callback) {\\n  callback(null, user);\\n}",
+                "get_user": "function get_user(email, callback) {}",
+            },
+        }],
+    }, block_fields={"options"}))
     extract_code(t, tmp_path)
-    assert (tmp_path / "scripts" / "my-db" / "login.js").read_text() == "function login(){}"
-    assert (tmp_path / "scripts" / "my-db" / "get_user.js").read_text() == "function gu(){}"
     conn = t.of_type("auth0_connection")[0]
-    cs = conn.attrs["options"]["customScripts"]
-    assert cs["login"] == {"__ref__": 'file("${path.module}/scripts/my-db/login.js")'}
+    cs = conn.attrs["options"][0]["custom_scripts"]
+    assert cs["login"] == "function login(user, callback) {\n  callback(null, user);\n}"
+    assert "\\n" not in cs["login"]
+    assert cs["get_user"] == "function get_user(email, callback) {}"
+    # no files written for connection scripts
+    assert not (tmp_path / "scripts").exists()

@@ -20,6 +20,7 @@ from pathlib import Path
 
 import hcl2
 
+from .hclstr import hcl_unescape
 from .model import Resource, Tenant
 
 # The attribute that holds a resource's OWN source-tenant id, per type.
@@ -49,6 +50,23 @@ def _unmangle_keys_recursive(v: object) -> object:
     return v
 
 
+def _unescape_strings_recursive(v: object) -> object:
+    """HCL-unescape leaf string values so json.dumps() escapes them exactly once.
+
+    Without this, string values re-parsed by hcl2 still carry literal HCL escape
+    sequences (e.g. a two-character `\\n`) from the source text — json.dumps then
+    re-escapes the backslash itself, producing double-escaped JSON that Terraform
+    heredocs pass through verbatim (heredocs don't unescape their body).
+    """
+    if isinstance(v, dict):
+        return {k: _unescape_strings_recursive(val) for k, val in v.items()}
+    if isinstance(v, list):
+        return [_unescape_strings_recursive(x) for x in v]
+    if isinstance(v, str):
+        return hcl_unescape(v)
+    return v
+
+
 def _eval_jsonencode(expr: str) -> object:
     """Evaluate a jsonencode() expression from generated HCL.
 
@@ -72,6 +90,7 @@ def _eval_jsonencode(expr: str) -> object:
         if isinstance(raw, list) and raw:
             raw = raw[0]
         val = _unmangle_keys_recursive(_unquote_value(raw))
+        val = _unescape_strings_recursive(val)
         return _json.dumps(val, ensure_ascii=False)
     except Exception:
         return expr  # fall back: keep as raw expression string
@@ -117,7 +136,7 @@ def _unquote_value(v: object) -> object:
         return [_unquote_value(x) for x in v]
     if isinstance(v, dict):
         return {
-            k: _unquote_value(val)
+            _unquote_key(k): _unquote_value(val)
             for k, val in v.items()
             if k != "__is_block__"
         }
