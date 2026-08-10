@@ -1,5 +1,11 @@
-"""Extract inline JS (action code, connection custom DB scripts) and form/flow
-JSON bodies to files, replacing inline values with file() references.
+"""Extract inline JS (action code) and form/flow JSON bodies to files, replacing
+inline values with file() references. Connection `custom_scripts` (DB connection
+JS) are HCL-unescaped in place rather than extracted to files: their script-name
+keys vary per connection instance, and emit_modules' dynamic-block renderer
+builds each block's shape from a single sample instance, so it cannot represent
+a per-instance-varying-key map for a single for_each resource. Do not "fix" this
+back into file-extraction without also reworking emit_modules/emit_env for that
+shape.
 """
 from __future__ import annotations
 
@@ -7,6 +13,7 @@ import json as _json
 import re
 from pathlib import Path
 
+from .hclstr import hcl_unescape as _hcl_unescape
 from .model import Tenant
 
 # Body fields in auth0_form / auth0_flow that hold JSON strings after
@@ -92,22 +99,6 @@ def _ref(rel: str) -> dict:
     return {"__ref__": f'file("${{path.module}}/{rel}")'}
 
 
-def _hcl_unescape(s: str) -> str:
-    """Unwrap one level of HCL string escaping left intact by python-hcl2.
-
-    python-hcl2 strips the surrounding quotes of an HCL string literal but leaves
-    inner escapes (\\" \\n \\\\ \\uXXXX) untouched, so a body extracted from the
-    generated config is still escaped. Re-wrapping in quotes and JSON-decoding
-    recovers the real text. Falls back to the original string on any failure.
-    """
-    if "\\" not in s:
-        return s
-    try:
-        return _json.loads(f'"{s}"')
-    except (ValueError, TypeError):
-        return s
-
-
 def extract_code(tenant: Tenant, modules_dir: Path) -> None:
     modules_dir = Path(modules_dir)
 
@@ -124,17 +115,22 @@ def extract_code(tenant: Tenant, modules_dir: Path) -> None:
 
     for conn in tenant.of_type("auth0_connection"):
         options = conn.attrs.get("options")
+        # `options` is an HCL block, so hcl2 parses it as a single-item list of
+        # dicts (with an __is_block__ marker), not a plain dict.
+        if isinstance(options, list) and options and isinstance(options[0], dict):
+            options = options[0]
         if not isinstance(options, dict):
             continue
-        scripts = options.get("customScripts")
+        # Real provider/HCL attribute is snake_case `custom_scripts`, not
+        # `customScripts` — the per-instance script-name keys vary across
+        # connections, so (unlike actions/email templates) these are unescaped
+        # in place rather than extracted to files (see module docstring).
+        scripts = options.get("custom_scripts")
         if not isinstance(scripts, dict):
             continue
-        conn_name = conn.attrs.get("name", conn.key)
         for script_name, body in list(scripts.items()):
             if isinstance(body, str):
-                rel = f"scripts/{conn_name}/{script_name}.js"
-                _write(modules_dir / rel, _hcl_unescape(body))
-                scripts[script_name] = _ref(rel)
+                scripts[script_name] = _hcl_unescape(body)
 
 
 # Types whose source-tenant ids may appear *inside* form/flow JSON bodies and
