@@ -57,6 +57,19 @@ _MODULE_LOCALS: dict[str, tuple[str, str, list[str]]] = {
 }
 
 
+# Types whose module variable is declared `type = any` instead of a strict
+# map(object({...})). Terraform converts tfvars to the declared type and needs every
+# entry of the map to share ONE type. These resources hold free-form nested blocks
+# whose shape differs per instance, so no single object type fits them all.
+# Evidence (real tenant): two auth0 database connections whose
+# `options.attributes` blocks differ fail with "cannot find a common base type for
+# all elements"; loosening individual attributes does not help, only the whole type.
+# Cost: Terraform no longer type-checks this variable, so a typo in tfvars surfaces
+# at the provider instead of at variable load. Add a type here only with evidence.
+LOOSELY_TYPED: dict[str, str] = {
+    "auth0_connection": "entries have differing nested shapes (e.g. options.attributes)",
+}
+
 _SKIP_ATTRS = frozenset(("__is_block__", "__comments__"))
 
 
@@ -559,11 +572,21 @@ def emit_modules(tenant: Tenant, modules_dir: Path, provider_version: str = "1.4
             # Explicit type: inference would give a per-resource tuple type that
             # cannot unify across the map.
             type_obj["secret_names"] = HclOptional(Raw("list(string)"), default=[])
-        var_blocks.append(
-            f'variable "{var_name}" {{\n'
-            f"  type = map({render_type(type_obj)})\n"
-            f"  default = {{}}\n}}\n"
-        )
+        if tf_type in LOOSELY_TYPED:
+            var_blocks.append(
+                f'# {tf_type}: declared `any` because {LOOSELY_TYPED[tf_type]}.\n'
+                f'# Terraform requires every map entry to share one type, which a strict\n'
+                f'# object type cannot express here. See LOOSELY_TYPED in the generator.\n'
+                f'variable "{var_name}" {{\n'
+                f"  type    = any\n"
+                f"  default = {{}}\n}}\n"
+            )
+        else:
+            var_blocks.append(
+                f'variable "{var_name}" {{\n'
+                f"  type = map({render_type(type_obj)})\n"
+                f"  default = {{}}\n}}\n"
+            )
 
         # NOTE: computed fields (client_id, client_secret, signing_secret, …) are
         # intentionally NOT emitted as outputs. They are Auth0-generated and live

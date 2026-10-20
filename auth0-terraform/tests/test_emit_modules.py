@@ -239,3 +239,24 @@ def test_no_write_only_or_per_type_secret_variables_are_emitted(tmp_path):
         txt = f.read_text()
         for banned in ("_wo_version", "_secrets[", "kv_secrets", "email_provider_credentials"):
             assert banned not in txt, (f.name, banned)
+
+
+def test_connections_variable_is_untyped_with_explanation(tmp_path):
+    # Connections with differently shaped nested blocks cannot share one object
+    # type, so the variable is `any` and says why.
+    t = Tenant()
+    t.add(Resource("auth0_connection", "db_a", "1",
+                   {"name": "a", "strategy": "auth0", "options": [{"x": 1}]},
+                   block_fields={"options"}))
+    emit_modules(t, tmp_path)
+    variables = (tmp_path / "variables.tf").read_text()
+    assert 'variable "connections" {\n  type    = any' in variables
+    assert "cannot find a common base type" not in variables
+    assert "LOOSELY_TYPED" in variables      # explains where the rule lives
+    assert "map(object" not in variables.split('variable "connections"')[1].split("}")[0]
+
+
+def test_other_types_keep_their_strict_object_type(tmp_path):
+    emit_modules(_tenant(), tmp_path)
+    variables = (tmp_path / "variables.tf").read_text()
+    assert "map(object(" in variables.split('variable "applications"')[1]
