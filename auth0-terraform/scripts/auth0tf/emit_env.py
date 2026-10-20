@@ -141,7 +141,10 @@ def _tfvars(present, populated: bool) -> str:
         entries: dict = {}
         for r in resources:
             entry: dict = {}
-            for k in all_plain:
+            # sorted(): `all_plain` is a set, whose order changes between runs
+            # (string hash randomisation). Output must be byte-for-byte stable or
+            # every re-export / resync shows a diff when nothing has changed.
+            for k in sorted(all_plain):
                 if k in r.attrs:
                     entry[k] = _strip_refs(r.attrs[k])
                 elif k == "secret_names":

@@ -106,3 +106,29 @@ def test_plain_string_prompt_body_is_valid_json_in_tfvars(tmp_path):
     parsed = json.loads(bodies[0].replace("$${", "${"))
     assert parsed["login"] == {"title": "Log in to ${companyName}",
                                "quote": 'say "hi"', "accent": "café"}
+
+
+def test_output_is_deterministic_across_hash_seeds(tmp_path):
+    # Resync diffs a fresh export against a stored baseline, so the same tenant must
+    # always produce byte-identical files. Sets iterate in a different order for
+    # every Python process unless PYTHONHASHSEED is fixed.
+    import os
+    import subprocess
+    import sys
+    root = Path(__file__).parent.parent
+    outs = []
+    for seed in ("1", "2", "3"):
+        out = tmp_path / f"s{seed}"
+        subprocess.run(
+            [sys.executable, "-m", "scripts.auth0tf.cli", "transform",
+             "--input", str(FIX / "refs_tenant.tf"), "--out", str(out), "--env", "dev",
+             "--other-envs", "prod"],
+            cwd=root, check=True, capture_output=True,
+            env={**os.environ, "PYTHONHASHSEED": seed})
+        outs.append(out)
+    files = sorted(p.relative_to(outs[0]) for p in outs[0].rglob("*") if p.is_file())
+    assert files
+    for rel in files:
+        first = (outs[0] / rel).read_bytes()
+        for other in outs[1:]:
+            assert (other / rel).read_bytes() == first, str(rel)
