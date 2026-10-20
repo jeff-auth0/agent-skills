@@ -96,25 +96,27 @@ def test_extract_action_code_unescapes_to_real_source(tmp_path):
     assert js.count("\n") >= 4                     # genuinely multi-line
 
 
-def test_scaffold_action_secrets_splits_kv_and_hardcoded():
-    # secret names referenced in code are discovered and split: sensitive-looking
-    # → kv_secrets (list), the rest → secrets (name->"" map to fill in tfvars).
+def test_scaffold_action_secrets_records_names_only():
+    # every secret name the code reads is listed (sorted, de-duplicated); no
+    # values, no guess at which names are "really" sensitive.
     code = ("exports.onExecutePostLogin = async (event, api) => {\n"
             "  const url = event.secrets.TOYOTA_LOGO_URL;\n"
             "  const base = secrets.IG_BASE_URL;\n"
+            "  const again = secrets.IG_BASE_URL;\n"
             "  const sec = secrets.INTEGRATION_GATEWAY_CLIENT_SECRET;\n"
             "};")
     t = Tenant()
     t.add(Resource("auth0_action", "a", "1", {"name": "a", "code": code}))
     scaffold_action_secrets(t)
     a = t.of_type("auth0_action")[0]
-    assert a.attrs["secrets"] == {"IG_BASE_URL": "", "TOYOTA_LOGO_URL": ""}
-    assert a.attrs["kv_secrets"] == ["INTEGRATION_GATEWAY_CLIENT_SECRET"]
+    assert a.attrs["secret_names"] == [
+        "IG_BASE_URL", "INTEGRATION_GATEWAY_CLIENT_SECRET", "TOYOTA_LOGO_URL"]
+    assert "secrets" not in a.attrs and "kv_secrets" not in a.attrs
 
 
 def test_scaffold_action_secrets_routes_form_id_to_reference():
-    # a *_FORM_ID secret resolves to the best-matching auth0_form reference,
-    # not a hardcoded/KV value.
+    # a *_FORM_ID secret resolves to the best-matching auth0_form reference and is
+    # NOT a customer secret.
     t = Tenant()
     t.add(Resource("auth0_form", "form_profile_enrollement", "", {"name": "f"}))
     t.add(Resource("auth0_form", "mfa_enrollement", "", {"name": "m"}))
@@ -126,9 +128,7 @@ def test_scaffold_action_secrets_routes_form_id_to_reference():
     assert a.attrs["ref_secrets"] == {
         "PROGRESSIVE_PROFILING_FORM_ID": "auth0_form.form_profile_enrollement.id"
     }
-    # not duplicated as a hardcoded/KV secret
-    assert "PROGRESSIVE_PROFILING_FORM_ID" not in a.attrs.get("secrets", {})
-    assert "PROGRESSIVE_PROFILING_FORM_ID" not in a.attrs.get("kv_secrets", [])
+    assert "PROGRESSIVE_PROFILING_FORM_ID" not in a.attrs["secret_names"]
 
 
 def test_scaffold_action_secrets_noop_without_refs():
@@ -137,7 +137,7 @@ def test_scaffold_action_secrets_noop_without_refs():
                    {"name": "a", "code": "exports.onExecutePostLogin = () => {};"}))
     scaffold_action_secrets(t)
     a = t.of_type("auth0_action")[0]
-    assert "secrets" not in a.attrs and "kv_secrets" not in a.attrs
+    assert "secret_names" not in a.attrs and "ref_secrets" not in a.attrs
 
 
 def test_form_flow_body_cross_refs_wrapped_with_replace(tmp_path):

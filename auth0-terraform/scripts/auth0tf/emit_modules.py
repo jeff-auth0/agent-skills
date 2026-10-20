@@ -1,5 +1,12 @@
 """Emit modules/<type>.tf (for_each blocks), variables.tf (typed maps),
-and outputs.tf (computed secrets)."""
+secrets.tf (the `secrets` variable and its required-keys check) and outputs.tf.
+
+Secrets: every customer-supplied value is read from ONE variable,
+`var.secrets` (map(string), flat dotted keys — see secret_keys.py). The secret
+binder (secret_binding.py) runs before this module and leaves its decisions on the
+Tenant (field_overrides, block_overrides, static_blocks, secrets); this module only
+renders them.
+"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -59,13 +66,16 @@ def _is_block_list(v) -> bool:
 
 
 def _dynamic_block(field: str, items_sample, outer_iter: str | None = None,
-                   depth: int = 1) -> list[str]:
+                   depth: int = 1, overrides: dict[str, str] | None = None) -> list[str]:
     """Recursively emit a dynamic block.
 
     outer_iter: name of the enclosing iterator for nested blocks (e.g. "captcha"
     when generating the content of a dynamic "captcha" block).
     depth: indentation level (1 = top-level inside a resource block).
+    overrides: {sub-attribute: Terraform expression} that replace the usual
+    `<field>.value.<sub-attribute>` (used to inject `var.secrets` lookups).
     """
+    overrides = overrides or {}
     pad = "  " * depth
     cpd = "  " * (depth + 1)   # content padding
     spd = "  " * (depth + 2)   # sub-attr padding inside content
@@ -83,10 +93,15 @@ def _dynamic_block(field: str, items_sample, outer_iter: str | None = None,
         sample = items_sample[0]
         if isinstance(sample, dict):
             sub_keys = [k for k in sample if k not in _SKIP_ATTRS]
+            # secret sub-attributes are removed from the sample by the binder; add
+            # them back so the override expression is emitted.
+            sub_keys += [k for k in overrides if k not in sub_keys]
             width = max((len(k) for k in sub_keys), default=1)
             for sk in sub_keys:
-                sv = sample[sk]
-                if _is_block_list(sv):
+                sv = sample.get(sk)
+                if sk in overrides:
+                    lines.append(f'{spd}{sk.ljust(width)} = {overrides[sk]}')
+                elif _is_block_list(sv):
                     # nested block: recurse, outer iterator is `field`
                     lines.extend(_dynamic_block(sk, sv,
                                                 outer_iter=field,
@@ -158,21 +173,6 @@ TYPE_MAP: dict[str, tuple[str, str]] = {
     "auth0_trigger_actions": ("trigger_actions.tf", "trigger_actions"),
     "auth0_phone_provider": ("phone_provider.tf", "phone_provider"),
     "auth0_prompt_screen_partial": ("prompt_screen_partials.tf", "prompt_screen_partials"),
-}
-
-
-# auth0_email_provider credential fields per provider `name`. Auth0 never returns
-# credential VALUES (write-only), so for the configured provider these fields are
-# injected from Key Vault (var.email_provider_credentials) rather than tfvars.
-EMAIL_PROVIDER_CREDENTIALS: dict[str, list[str]] = {
-    "ms365":    ["ms365_client_id", "ms365_client_secret", "ms365_tenant_id"],
-    "smtp":     ["smtp_host", "smtp_port", "smtp_user", "smtp_pass"],
-    "mailgun":  ["api_key", "domain", "region"],
-    "ses":      ["access_key_id", "secret_access_key", "region"],
-    "azure_cs": ["azure_cs_connection_string"],
-    "sendgrid": ["api_key"],
-    "sparkpost": ["api_key", "region"],
-    "mandrill": ["api_key"],
 }
 
 
@@ -364,8 +364,9 @@ def emit_modules(tenant: Tenant, modules_dir: Path, provider_version: str = "1.4
     var_blocks: list[str] = []
     output_blocks: list[str] = []
     generic_types: list[str] = []
-    emit_actions_kv_secrets = False  # set when any action declares kv_secrets
-    emit_email_provider_credentials = False  # set when email_provider creds → KV
+    # tf_type -> variable name, for every for_each type emitted below. Used to
+    # generate the required-secrets check (modules/secrets.tf).
+    emitted_vars: dict[str, str] = {}
 
     for tf_type in tenant.types():
         if tf_type in LITERAL_TYPE_MAP:
@@ -375,6 +376,7 @@ def emit_modules(tenant: Tenant, modules_dir: Path, provider_version: str = "1.4
         else:
             filename, var_name = _derive_mapping(tf_type)
             generic_types.append(tf_type)
+        emitted_vars[tf_type] = var_name
         resources = tenant.of_type(tf_type)
         merged = _merged_attrs(resources)
 
@@ -387,39 +389,26 @@ def emit_modules(tenant: Tenant, modules_dir: Path, provider_version: str = "1.4
 
         plain_fields = [k for k in merged if classify_field(tf_type, k) == "plain"
                         and k not in all_block_fields]
-        input_fields = [k for k in merged if classify_field(tf_type, k) == "input"
-                        and k not in all_block_fields]
-        # computed fields are neither emitted as attrs nor as outputs — they are
-        # Auth0-generated and live in the Terraform state file.
+        # "computed" fields (client_id, *_wo, ...) are neither emitted as attributes
+        # nor as outputs: Auth0 generates them and they live in the state file.
+        # "input" and "internal" fields never appear here either: the secret binder
+        # already moved them out of the resource (see the overrides below).
 
-        # auth0_action secrets are scaffolded synthetic fields (`secrets`,
-        # `kv_secrets`); they drive a dedicated dynamic block + KV merge below,
-        # so exclude them from the generic plain/input/schema handling (their
-        # names would otherwise be misclassified as input secrets).
-        action_secrets = tf_type == "auth0_action" and (
-            "secrets" in merged or "kv_secrets" in merged or "ref_secrets" in merged)
-        # per-action reference-valued secrets: { action_key: { NAME: tf_expr } }.
-        # These are module-side resource references (e.g. auth0_form.x.id), kept in
-        # a locals block — never in tfvars or the variable schema.
+        # Secret bindings decided by secret_binding.bind_secrets() for this type.
+        field_overrides = tenant.field_overrides.get(tf_type, {})    # attr -> expr
+        block_overrides = tenant.block_overrides.get(tf_type, {})    # block -> {attr: expr}
+        static_blocks = tenant.static_blocks.get(tf_type, {})        # block -> {attr: expr}
+        # Resources that list the secrets they need in tfvars (`secret_names`).
+        has_secret_names = any("secret_names" in r.attrs for r in resources)
+
+        # auth0_action: references to other managed resources (e.g. a form id
+        # generated in this tenant) are not customer secrets. They are kept in a
+        # module-side locals block, never in tfvars or the variable schema.
         action_ref_secrets: dict[str, dict] = {}
-        if action_secrets:
-            for f in ("secrets", "kv_secrets", "ref_secrets"):
-                if f in plain_fields:
-                    plain_fields.remove(f)
-                if f in input_fields:
-                    input_fields.remove(f)
+        if tf_type == "auth0_action":
             for r in resources:
                 if r.attrs.get("ref_secrets"):
                     action_ref_secrets[r.key] = r.attrs["ref_secrets"]
-
-        # auth0_email_provider: credential values are write-only (Auth0 returns
-        # null), so inject the configured provider's credential fields from Key
-        # Vault instead of the (null) tfvars block.
-        email_cred_fields: list[str] = []
-        if tf_type == "auth0_email_provider":
-            email_cred_fields = EMAIL_PROVIDER_CREDENTIALS.get(merged.get("name"), [])
-            if email_cred_fields:
-                all_block_fields.discard("credentials")  # replace generic block
 
         # reference fields: rewire() replaced source-tenant ids with synthetic
         # lookup keys (kind=scalar -> `<field>_key`, kind=list -> `<field>_keys`),
@@ -474,16 +463,18 @@ def emit_modules(tenant: Tenant, modules_dir: Path, provider_version: str = "1.4
 
         literal_plain = [f for f in plain_fields if f not in literal_skip]
 
+        # Top-level secret attributes: `attr = <var.secrets lookup>`.
+        for attr in sorted(field_overrides):
+            ref_lines.append(f"  {attr} = {field_overrides[attr]}")
+
         # resource block
         _ml = _MODULE_LOCALS.get(tf_type)
         foreach_src = f"local.{_ml[1]}" if _ml else f"var.{var_name}"
         lines = [f'resource "{tf_type}" "this" {{',
                  f"  for_each = {foreach_src}"]
-        width = max([len(f) for f in literal_plain + input_fields] or [1])
+        width = max([len(f) for f in literal_plain] or [1])
         for f in literal_plain:
             lines.append(f"  {f.ljust(width)} = each.value.{f}")
-        for f in input_fields:
-            lines.append(f"  {f.ljust(width)} = var.{var_name}_secrets[each.key]")
         lines.extend(ref_lines)
         # dynamic blocks for block-type fields (nested reference blocks emit a
         # per-item lookup for their inner id field; all others pass through).
@@ -493,20 +484,23 @@ def emit_modules(tenant: Tenant, modules_dir: Path, provider_version: str = "1.4
             if bf in nested_ref_blocks:
                 lines.extend(_nested_ref_block(bf, merged[bf], nested_ref_blocks[bf]))
             else:
-                lines.extend(_dynamic_block(bf, merged[bf]))
-        # auth0_action secrets: merge hardcoded tfvars values with Key-Vault-sourced
-        # ones (var.actions_kv_secrets, keyed "<action>::<name>"), then emit a block
-        # per resulting secret. Values not extractable from Auth0 — supplied by IaC.
-        if action_secrets:
+                lines.extend(_dynamic_block(bf, merged[bf], overrides=block_overrides.get(bf)))
+        # Static blocks that hold secrets (e.g. email provider `credentials`).
+        for bname in sorted(static_blocks):
+            attrs = static_blocks[bname]
+            w = max(len(a) for a in attrs)
+            lines.append(f"  {bname} {{")
+            lines += [f"    {a.ljust(w)} = {attrs[a]}" for a in attrs]
+            lines.append("  }")
+        # auth0_action secrets: one block per secret name the action code reads.
+        # Names come from tfvars (`secret_names`); values from var.secrets. Secrets
+        # that reference another managed resource come from the locals block above.
+        if tf_type == "auth0_action":
             merge_lines = [
                 '    for_each = merge(',
-                '      try(each.value.secrets, {}),',
-                '      { for n in try(each.value.kv_secrets, []) : '
-                'n => var.actions_kv_secrets["${each.key}::${n}"] },',
+                '      { for n in each.value.secret_names : n => var.secrets["actions.${each.key}.${n}"] },',
             ]
             if action_ref_secrets:
-                # resource-reference-valued secrets (e.g. a form id generated in
-                # this tenant), looked up per-action from the locals block below.
                 merge_lines.append(
                     '      lookup(local.action_secret_refs, each.key, {}),')
             merge_lines.append('    )')
@@ -516,18 +510,11 @@ def emit_modules(tenant: Tenant, modules_dir: Path, provider_version: str = "1.4
                       '      value = secrets.value',
                       '    }',
                       '  }']
-        # auth0_email_provider credentials sourced from Key Vault
-        if email_cred_fields:
-            emit_email_provider_credentials = True
-            w = max(len(f) for f in email_cred_fields)
-            lines.append("  credentials {")
-            for f in email_cred_fields:
-                expr = f'var.email_provider_credentials["{f}"]'
-                if f.endswith("_port"):
-                    expr = f'tonumber({expr})'  # smtp_port is a number
-                lines.append(f"    {f.ljust(w)} = {expr}")
-            lines.append("  }")
         lines.append("}")
+
+        # --- explanatory comment above the resource -------------------------------
+        notes = _secret_notes(tf_type, var_name, field_overrides, block_overrides,
+                              static_blocks, has_secret_names)
         # Reference-valued action secrets live in a locals block (resource refs
         # can't sit in tfvars); the secrets merge looks them up per-action key.
         prelude = ""
@@ -536,8 +523,9 @@ def emit_modules(tenant: Tenant, modules_dir: Path, provider_version: str = "1.4
         if action_ref_secrets:
             ref_lines2 = [
                 "locals {",
-                "  # Action-secret values that reference a resource generated in this",
-                "  # tenant (ids differ per tenant). Edit to add or adjust references.",
+                "  # Action secrets whose value is another resource managed here (for",
+                "  # example a form id). They are references, not customer secrets, so",
+                "  # they do not appear in var.secrets. Edit to add or adjust references.",
                 "  action_secret_refs = {",
             ]
             for akey in sorted(action_ref_secrets):
@@ -552,7 +540,7 @@ def emit_modules(tenant: Tenant, modules_dir: Path, provider_version: str = "1.4
         header = _MODULE_FILE_HEADERS.get(filename, "")
         body = "\n".join(lines) + "\n"
         (modules_dir / filename).write_text(
-            (header + "\n" if header else "") + prelude + body)
+            (header + "\n" if header else "") + prelude + notes + body)
 
         # variable block: typed map over scalar plain fields; block fields use list(any)
         # Sparse plain fields → optional(inferred_type)
@@ -566,53 +554,25 @@ def emit_modules(tenant: Tenant, modules_dir: Path, provider_version: str = "1.4
         for bf in sorted(all_block_fields):
             if bf in merged:
                 type_obj[bf] = HclOptional(None, default=[])  # optional(any, []) — avoids inter-entry type unification failure
-        if action_secrets:
-            # explicit types — inference would produce a per-action object() that
-            # won't unify across the map. kv_secrets is consumed by the merge above.
-            type_obj["secrets"] = HclOptional(Raw("map(string)"), default={})
-            type_obj["kv_secrets"] = HclOptional(Raw("list(string)"), default=[])
-            # the secrets block always references var.actions_kv_secrets, so the
-            # variable must be declared even if no action uses KV yet.
-            emit_actions_kv_secrets = True
+        if has_secret_names:
+            # Names of the secrets each resource needs from var.secrets (never values).
+            # Explicit type: inference would give a per-resource tuple type that
+            # cannot unify across the map.
+            type_obj["secret_names"] = HclOptional(Raw("list(string)"), default=[])
         var_blocks.append(
             f'variable "{var_name}" {{\n'
             f"  type = map({render_type(type_obj)})\n"
             f"  default = {{}}\n}}\n"
         )
-        if input_fields:
-            var_blocks.append(
-                f'variable "{var_name}_secrets" {{\n'
-                f"  type      = map(string)\n"
-                f"  sensitive = true\n"
-                f"  default   = {{}}\n}}\n"
-            )
 
         # NOTE: computed fields (client_id, client_secret, signing_secret, …) are
         # intentionally NOT emitted as outputs. They are Auth0-generated and live
-        # in the Terraform state file; they are neither injected nor pushed to KV.
-
-    # Key-Vault-sourced action secrets, keyed "<action_key>::<SECRET_NAME>",
-    # supplied by the env layer (see emit_env). Merged into each action's secrets.
-    if emit_actions_kv_secrets:
-        var_blocks.append(
-            'variable "actions_kv_secrets" {\n'
-            "  type      = map(string)\n"
-            "  sensitive = true\n"
-            "  default   = {}\n}\n"
-        )
-
-    # Key-Vault-sourced email provider credentials, keyed by credential field name.
-    if emit_email_provider_credentials:
-        var_blocks.append(
-            'variable "email_provider_credentials" {\n'
-            "  type      = map(string)\n"
-            "  sensitive = true\n"
-            "  default   = {}\n}\n"
-        )
+        # in the Terraform state file; the customer never supplies them.
 
     # auth0_domain is required by domain-derived field expressions (e.g. /api/v2/ audience)
     var_blocks.insert(0, 'variable "auth0_domain" {\n  type = string\n}\n')
     (modules_dir / "variables.tf").write_text("\n".join(var_blocks))
+    (modules_dir / "secrets.tf").write_text(_secrets_tf(tenant, emitted_vars))
     (modules_dir / "outputs.tf").write_text("\n".join(output_blocks))
     (modules_dir / "versions.tf").write_text(
         'terraform {\n'
@@ -625,3 +585,94 @@ def emit_modules(tenant: Tenant, modules_dir: Path, provider_version: str = "1.4
         '}\n'
     )
     return generic_types
+
+
+def _secret_notes(tf_type, var_name, field_overrides, block_overrides, static_blocks,
+                  has_secret_names) -> str:
+    """Comment block placed above a resource explaining where its secrets come from."""
+    if not (field_overrides or block_overrides or static_blocks or has_secret_names
+            or tf_type == "auth0_action"):
+        return ""
+    out = ["# SECRETS",
+           "# This resource reads customer-supplied values from `var.secrets`, a flat",
+           "# map(string). The exact keys are listed in the project README and checked",
+           "# by modules/secrets.tf before anything is created or changed."]
+    if tf_type == "auth0_action":
+        out += ["# Key format: actions.<action key>.<SECRET NAME>. The names each action",
+                "# needs are in terraform.tfvars (`secret_names`); no values are stored there."]
+    elif has_secret_names:
+        out += [f"# Key format: {var_name}.<resource key>.<name>. Each resource lists the",
+                "# names it needs in terraform.tfvars (`secret_names`); no values are stored there."]
+    if field_overrides or static_blocks:
+        out += [f"# Key format: {var_name}" + (".<resource key>" if field_overrides else "") + ".<attribute>"]
+    return "\n".join(out) + "\n"
+
+
+def _secrets_tf(tenant: Tenant, emitted_vars: dict[str, str]) -> str:
+    """modules/secrets.tf: the `secrets` variable and the required-keys check.
+
+    The check turns "Invalid index" errors (one at a time, buried in the plan) into
+    one clear message listing every missing key. It derives the required keys from
+    the module's own inputs, so adding an action or connection in tfvars adds its
+    requirements automatically.
+    """
+    parts: list[str] = []
+    for tf_type, var_name in emitted_vars.items():
+        if any("secret_names" in r.attrs for r in tenant.of_type(tf_type)):
+            parts.append(
+                f'    flatten([for k, v in var.{var_name} : '
+                f'[for n in v.secret_names : "{var_name}.${{k}}.${{n}}"]]),')
+        for attr in sorted(tenant.field_overrides.get(tf_type, {})):
+            parts.append(
+                f'    [for k, v in var.{var_name} : "{var_name}.${{k}}.{attr}"],')
+        if tenant.static_blocks.get(tf_type):
+            keys = sorted(s.key for s in tenant.secrets if s.tf_type == tf_type)
+            listed = ", ".join(f'"{k}"' for k in keys)
+            parts.append(f'    length(var.{var_name}) > 0 ? [{listed}] : [],')
+    required = "\n".join(parts) if parts else "    [],"
+    return f"""# Customer-supplied secrets
+#
+# Every secret this module needs is read from ONE variable, `secrets`: a flat
+# map(string) whose keys look like
+#
+#     actions.my_action.API_KEY
+#     connections.my_connection.client_secret
+#     email_provider.api_key
+#
+# The complete list of keys for this tenant is in the project README ("Secrets").
+# How the values get into this variable (a vault, CI variables, a local file ...)
+# is up to you; Terraform only needs the map. Values end up in the Terraform
+# state, so protect the state backend.
+
+variable "secrets" {{
+  description = "Customer-supplied secrets, keyed as documented in the project README."
+  type        = map(string)
+  sensitive   = true
+  default     = {{}}
+}}
+
+locals {{
+  # Keys required by the resources currently defined in tfvars.
+  required_secret_keys = concat(
+{required}
+  )
+
+  # Required keys the caller did not provide. `keys()` of a sensitive map is
+  # sensitive, so nonsensitive() is used to compare names only (never values).
+  missing_secret_keys = [
+    for k in local.required_secret_keys : k
+    if !contains(nonsensitive(keys(var.secrets)), k)
+  ]
+}}
+
+# Fails the plan with a single message that lists every missing key.
+# (A variable validation cannot be used: it may only reference its own variable.)
+resource "terraform_data" "required_secrets" {{
+  lifecycle {{
+    precondition {{
+      condition     = length(local.missing_secret_keys) == 0
+      error_message = "Missing required secrets (see README, section Secrets):\\n  - ${{join("\\n  - ", local.missing_secret_keys)}}"
+    }}
+  }}
+}}
+"""

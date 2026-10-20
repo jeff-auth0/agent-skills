@@ -23,28 +23,6 @@ def test_tfvars_contains_plain_values_only(tmp_path):
     tfvars = (tmp_path / "terraform.tfvars").read_text()
     assert "applications = {" in tfvars
     assert '"My App"' in tfvars
-    # input secret must NOT be written to tfvars
-    assert "SOURCE_SECRET" not in tfvars
-
-
-def test_secrets_tf_has_comment_scaffold(tmp_path):
-    emit_env(_tenant(), tmp_path, env="dev", populated=True)
-    secrets = (tmp_path / "secrets.tf").read_text()
-    assert "Option A" in secrets
-    assert "TF_VAR_connections_secrets" in secrets
-
-
-def test_variables_tf_has_secrets_vars(tmp_path):
-    emit_env(_tenant(), tmp_path, env="dev", populated=True)
-    variables = (tmp_path / "variables.tf").read_text()
-    assert "connections_secrets" in variables
-    assert "sensitive" in variables
-
-
-def test_main_tf_wires_var_secrets(tmp_path):
-    emit_env(_tenant(), tmp_path, env="dev", populated=True)
-    main = (tmp_path / "main.tf").read_text()
-    assert "connections_secrets = var.connections_secrets" in main
 
 
 def test_skeleton_env_has_todo_stubs(tmp_path):
@@ -53,42 +31,6 @@ def test_skeleton_env_has_todo_stubs(tmp_path):
     assert "TODO" in main
     tfvars = (tmp_path / "terraform.tfvars").read_text()
     assert tfvars.strip().startswith("#")
-
-
-def test_env_email_provider_credentials_kv(tmp_path):
-    t = Tenant()
-    t.add(Resource("auth0_email_provider", "email_provider", "",
-                   {"name": "ms365", "enabled": True,
-                    "credentials": [{"ms365_client_id": None}]},
-                   block_fields={"credentials"}))
-    emit_env(t, tmp_path, env="dev", populated=True)
-    secrets = (tmp_path / "secrets.tf").read_text()
-    assert "email_provider_credentials" in secrets
-    main = (tmp_path / "main.tf").read_text()
-    assert "email_provider_credentials = var.email_provider_credentials" in main
-    tfvars = (tmp_path / "terraform.tfvars").read_text()
-    assert "ms365_client_id" not in tfvars  # credentials dropped from tfvars
-
-
-def test_env_action_kv_secrets_datasource_and_passthrough(tmp_path):
-    t = Tenant()
-    t.add(Resource("auth0_action", "act_x", "1",
-                   {"name": "act-x", "secrets": {"LOGO": ""},
-                    "kv_secrets": ["CLIENT_SECRET"]}))
-    emit_env(t, tmp_path, env="dev", populated=True)
-    secrets = (tmp_path / "secrets.tf").read_text()
-    assert "actions_kv_secrets" in secrets
-    main = (tmp_path / "main.tf").read_text()
-    assert "actions_kv_secrets = var.actions_kv_secrets" in main
-    tfvars = (tmp_path / "terraform.tfvars").read_text()
-    assert "secrets" in tfvars and "kv_secrets" in tfvars
-
-
-def test_backend_stub_has_all_examples(tmp_path):
-    emit_env(_tenant(), tmp_path, env="dev", populated=True)
-    backend = (tmp_path / "backend.tf").read_text()
-    for provider in ('backend "azurerm"', 'backend "s3"', 'backend "gcs"', 'backend "remote"'):
-        assert provider in backend
 
 
 def test_env_wires_new_and_unknown_types(tmp_path):
@@ -106,3 +48,41 @@ def test_env_wires_new_and_unknown_types(tmp_path):
         assert f"{var_name} = var.{var_name}" in main
         assert f'variable "{var_name}"' in variables
         assert f"{var_name} = {{" in tfvars
+
+
+def test_env_declares_one_secrets_variable_and_passes_it_to_the_module(tmp_path):
+    emit_env(_tenant(), tmp_path, env="dev", populated=True)
+    secrets = (tmp_path / "secrets.tf").read_text()
+    assert 'variable "secrets"' in secrets
+    assert "map(string)" in secrets and "sensitive" in secrets
+    assert "your responsibility" in secrets
+    main = (tmp_path / "main.tf").read_text()
+    assert "secrets      = var.secrets" in main
+
+
+def test_env_has_no_vendor_scaffolds_or_per_type_secret_variables(tmp_path):
+    emit_env(_tenant(), tmp_path, env="dev", populated=True)
+    for f in ("secrets.tf", "main.tf", "variables.tf", "backend.tf"):
+        txt = (tmp_path / f).read_text()
+        for banned in ("azurerm", "Key Vault", "aws_secretsmanager", "GitHub Actions",
+                       "connections_secrets", "actions_secrets", "kv_secrets", "Option A"):
+            assert banned not in txt, (f, banned)
+
+
+def test_action_secret_names_are_in_tfvars_but_values_never(tmp_path):
+    t = Tenant()
+    t.add(Resource("auth0_action", "act_x", "1",
+                   {"name": "act-x", "secret_names": ["CLIENT_SECRET", "LOGO"]}))
+    t.add(Resource("auth0_action", "act_y", "2", {"name": "act-y"}))   # no secrets
+    emit_env(t, tmp_path, env="dev", populated=True)
+    tfvars = (tmp_path / "terraform.tfvars").read_text()
+    assert 'secret_names' in tfvars and '"CLIENT_SECRET"' in tfvars
+    assert "kv_secrets" not in tfvars
+
+
+def test_backend_stub_is_vendor_neutral(tmp_path):
+    emit_env(_tenant(), tmp_path, env="dev", populated=True)
+    backend = (tmp_path / "backend.tf").read_text()
+    assert "TODO" in backend and "state" in backend
+    for banned in ('backend "azurerm"', 'backend "s3"', 'backend "gcs"', "Azure", "AWS"):
+        assert banned not in backend

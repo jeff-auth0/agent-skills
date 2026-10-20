@@ -25,14 +25,6 @@ _FLOW_BODY_FIELDS = ("actions",)
 _SECRET_REF_RE = re.compile(r"\bsecrets\.([A-Za-z_][A-Za-z0-9_]*)")
 
 
-def _action_secret_is_kv(name: str) -> bool:
-    """Heuristic: route obviously-sensitive secret names to Key Vault, leaving
-    plain config (URLs, ids, flags) as hardcoded tfvars values."""
-    u = name.upper()
-    return ("SECRET" in u or "PASSWORD" in u or "PRIVATE_KEY" in u
-            or "CREDENTIAL" in u or u.endswith("_KEY") or u.endswith("_TOKEN"))
-
-
 def _tokens(s: str) -> set[str]:
     return {t for t in re.split(r"[^a-z0-9]+", s.lower()) if t}
 
@@ -56,13 +48,18 @@ def _reference_expr(tenant: Tenant, action_key: str, name: str) -> str | None:
 
 
 def scaffold_action_secrets(tenant: Tenant) -> None:
-    """Scaffold auth0_action `secrets` from the names referenced in each action's
-    code. The Auth0 API never returns secret VALUES, so the CLI emits no secrets
-    block — values must be supplied in IaC. For each discovered `secrets.<NAME>`:
-      - resolves to a managed resource id -> `ref_secrets` (name -> TF expression;
-        emitted as a module-side reference, not hardcoded — see emit_modules)
-      - sensitive-looking name            -> `kv_secrets` (list; from Key Vault)
-      - everything else                   -> `secrets`    (name->"" map; tfvars)
+    """Record, per auth0_action, the NAMES of the secrets its code reads.
+
+    The Auth0 API never returns secret VALUES, so the CLI emits no secrets block.
+    For each discovered `secrets.<NAME>`:
+      - it resolves to a managed resource id -> `ref_secrets` (name -> Terraform
+        expression, emitted module-side as a reference; not a customer secret)
+      - everything else                      -> `secret_names` (list). Only the
+        names go to tfvars; the values come from `var.secrets` (see secret_binding).
+
+    Auth0 stores action configuration (ids, URLs, flags) as secrets too, so no
+    attempt is made to guess which names are "really" sensitive: every name is
+    listed and the customer decides how to store each one.
     Note: secrets accessed via destructuring (e.g. `const {x} = event.secrets`)
     are not auto-discovered — add those names manually.
     """
@@ -74,18 +71,14 @@ def scaffold_action_secrets(tenant: Tenant) -> None:
         if not names:
             continue
         refs: dict[str, str] = {}
-        hard: dict[str, str] = {}
-        kv: list[str] = []
+        plain: list[str] = []
         for n in names:
             expr = _reference_expr(tenant, a.key, n)
             if expr:
                 refs[n] = expr
-            elif _action_secret_is_kv(n):
-                kv.append(n)
             else:
-                hard[n] = ""
-        a.attrs["secrets"] = hard
-        a.attrs["kv_secrets"] = kv
+                plain.append(n)
+        a.attrs["secret_names"] = plain
         if refs:
             a.attrs["ref_secrets"] = refs
 

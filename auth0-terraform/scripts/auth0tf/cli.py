@@ -7,7 +7,6 @@ from pathlib import Path
 
 from .emit_env import emit_env
 from .emit_modules import emit_literal_resources, emit_modules
-from .emit_pipeline import emit_azure_pipeline
 from .emit_readme import emit_readme
 from .extract import (
     extract_branding_templates,
@@ -17,6 +16,7 @@ from .extract import (
     scaffold_action_secrets,
 )
 from .parse import parse_dir, parse_provider_version
+from .secret_binding import bind_secrets
 from .references import (
     exclude_builtin_apis,
     rekey_client_grants,
@@ -26,8 +26,7 @@ from .references import (
 )
 
 
-def run(input_path: str, out_dir: str, env: str,
-        other_envs: list[str], cicd: str) -> dict:
+def run(input_path: str, out_dir: str, env: str, other_envs: list[str]) -> dict:
     out = Path(out_dir)
     modules = out / "modules"
     modules.mkdir(parents=True, exist_ok=True)
@@ -47,6 +46,7 @@ def run(input_path: str, out_dir: str, env: str,
     unresolved = sorted(rewire(tenant))    # before emit: fix cross-resource ID refs
     rewire_domain_logout_urls(tenant)      # after rewire: sentinel for client logout URLs
     rekey_client_grants(tenant)            # after rewire: stable human-readable grant keys
+    bind_secrets(tenant)                   # before emit: secrets -> var.secrets bindings + key list
 
     generic_types = emit_modules(tenant, modules, provider_version=provider_version)
     emit_literal_resources(tenant, modules)
@@ -55,21 +55,14 @@ def run(input_path: str, out_dir: str, env: str,
         emit_env(tenant, out / "envs" / other, env=other, populated=False, provider_version=provider_version)
 
     all_envs = [env] + list(other_envs)
-    if cicd == "azure-pipelines":
-        emit_azure_pipeline(out, envs=all_envs)
-
     emit_readme(out, counts=counts, envs=all_envs, unresolved=unresolved,
-                generic_types=generic_types, excluded=excluded)
+                generic_types=generic_types, excluded=excluded,
+                secrets=tenant.secrets, review_notes=tenant.review_notes,
+                tenant=tenant, active_env=env,
+                provider_version=provider_version)
     return {"counts": counts, "unresolved": unresolved, "envs": all_envs,
-            "generic_types": generic_types, "excluded": excluded}
-
-
-def emit_pipeline_cmd(project_dir: str, envs: list[str], cicd: str) -> None:
-    out = Path(project_dir)
-    if cicd == "azure-pipelines":
-        emit_azure_pipeline(out, envs=envs)
-    elif cicd in ("github-actions", "gitlab-ci"):
-        print(f"Pipeline generation for {cicd} is not yet supported — scaffold manually.")
+            "generic_types": generic_types, "excluded": excluded,
+            "secrets": tenant.secrets}
 
 
 def main(argv=None) -> None:
@@ -82,30 +75,19 @@ def main(argv=None) -> None:
     t.add_argument("--env", required=True)
     t.add_argument("--other-envs", default="")
 
-    pl = sub.add_parser("pipeline", help="Generate CI/CD pipeline file")
-    pl.add_argument("--project-dir", required=True)
-    pl.add_argument("--envs", required=True, help="comma-separated env names")
-    pl.add_argument("--cicd", choices=["azure-pipelines", "github-actions", "gitlab-ci", "none"],
-                    required=True)
-
     a = p.parse_args(argv)
 
     if a.command == "transform":
         others = [e.strip() for e in a.other_envs.split(",") if e.strip()]
-        result = run(a.input, a.out, a.env, others, cicd="none")
+        result = run(a.input, a.out, a.env, others)
         print(f"Done. Resources: {result['counts']}. Unresolved refs: {result['unresolved']}.")
+        print(f"Secrets the customer must supply: {len(result['secrets'])} (see README.md, section Secrets).")
         if result.get("excluded"):
             print("Excluded (auto-provisioned by Auth0, not replicated): "
                   + "; ".join(result["excluded"]))
         if result.get("generic_types"):
             print("Auto-handled (generic emission, review naming/structure): "
                   + ", ".join(sorted(result["generic_types"])))
-
-    elif a.command == "pipeline":
-        envs = [e.strip() for e in a.envs.split(",") if e.strip()]
-        emit_pipeline_cmd(a.project_dir, envs, a.cicd)
-        if a.cicd != "none":
-            print(f"Pipeline generated: {a.cicd}")
 
     else:
         p.print_help()
