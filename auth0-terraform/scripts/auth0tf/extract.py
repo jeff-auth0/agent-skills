@@ -13,6 +13,7 @@ import json as _json
 import re
 from pathlib import Path
 
+from .hclstr import hcl_template_unescape as _template_unescape
 from .hclstr import hcl_unescape as _hcl_unescape
 from .model import Tenant
 
@@ -84,8 +85,13 @@ def scaffold_action_secrets(tenant: Tenant) -> None:
 
 
 def _write(path: Path, content: str) -> None:
+    """Write an extracted body to disk.
+
+    Every file written here is read back with Terraform's `file()`, which does not
+    process `$${` / `%%{` escapes, so they are resolved now (see hclstr).
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content)
+    path.write_text(_template_unescape(content))
 
 
 def _ref(rel: str) -> dict:

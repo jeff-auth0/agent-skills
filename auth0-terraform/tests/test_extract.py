@@ -208,3 +208,32 @@ def test_unescape_prompt_custom_text_decodes_and_pretty_prints():
     assert login.attrs["body"].count("\n") >= 3   # real newlines: multi-line
     assert signup.attrs["body"] == "{}"
     assert weird.attrs["body"] == "not json \\n"              # non-JSON: unescaped only
+
+
+def test_extracted_action_code_resolves_hcl_template_escapes(tmp_path):
+    # The Auth0 CLI exports JS `${x}` as `$${x}` (HCL escape). The action file is read
+    # with file(), which does not unescape, so it must be resolved when written.
+    from auth0tf.extract import extract_code
+    t = Tenant()
+    code = "logger.info(`user $${event.user.user_id} 100%%{ok} real: ${kept}`);"
+    t.add(Resource("auth0_action", "a", "1", {"name": "a", "code": code}))
+    extract_code(t, tmp_path)
+    js = (tmp_path / "code/actions_code/a.js").read_text()
+    assert "`user ${event.user.user_id} 100%{ok}" in js
+    assert "$${" not in js and "%%{" not in js
+
+
+def test_template_unescape_helper():
+    from auth0tf.hclstr import hcl_template_unescape as u
+    assert u("a $${b} %%{c}") == "a ${b} %{c}"
+    assert u("no escapes ${x}") == "no escapes ${x}"      # a single $ is left alone
+    assert u("$$${x}") == "$${x}"                          # same left-to-right result as HCL
+    assert u("plain") == "plain"
+
+
+def test_other_extracted_bodies_resolve_escapes_too(tmp_path):
+    from auth0tf.extract import extract_email_bodies
+    t = Tenant()
+    t.add(Resource("auth0_email_template", "v", "", {"template": "verify", "body": "Hi $${user.name}"}))
+    extract_email_bodies(t, tmp_path)
+    assert (tmp_path / "code/email_templates/verify.liquid").read_text() == "Hi ${user.name}"
