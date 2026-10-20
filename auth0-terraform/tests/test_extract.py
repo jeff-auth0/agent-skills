@@ -190,3 +190,21 @@ def test_extract_db_scripts_unescapes_in_place(tmp_path):
     assert cs["get_user"] == "function get_user(email, callback) {}"
     # no files written for connection scripts
     assert not (tmp_path / "scripts").exists()
+
+
+def test_unescape_prompt_custom_text_decodes_and_pretty_prints():
+    from auth0tf.extract import unescape_prompt_custom_text
+    t = Tenant()
+    t.add(Resource("auth0_prompt_custom_text", "en_login", "",
+                   {"prompt": "login", "language": "en",
+                    "body": '{\\n    \\"login\\": {\\"title\\": \\"Log in to $${co}\\"}\\n}'}))
+    t.add(Resource("auth0_prompt_custom_text", "en_signup", "", {"body": "{}"}))
+    t.add(Resource("auth0_prompt_custom_text", "weird", "", {"body": "not json \\\\n"}))
+    unescape_prompt_custom_text(t)
+    login, signup, weird = t.of_type("auth0_prompt_custom_text")
+    assert "\\n" not in login.attrs["body"]       # no literal backslash-n left
+    assert '\\"' not in login.attrs["body"]       # no literal backslash-quote left
+    assert '"title": "Log in to $${co}"' in login.attrs["body"]   # $$ untouched
+    assert login.attrs["body"].count("\n") >= 3   # real newlines: multi-line
+    assert signup.attrs["body"] == "{}"
+    assert weird.attrs["body"] == "not json \\n"              # non-JSON: unescaped only

@@ -13,6 +13,7 @@ from .extract import (
     extract_code,
     extract_email_bodies,
     extract_form_bodies,
+    unescape_prompt_custom_text,
     scaffold_action_secrets,
 )
 from .parse import parse_dir, parse_provider_version
@@ -39,6 +40,7 @@ def run(input_path: str, out_dir: str, env: str, other_envs: list[str]) -> dict:
     extract_form_bodies(tenant, modules)   # before emit: form/flow JSON bodies → files
     extract_email_bodies(tenant, modules)  # before emit: email template bodies → files
     extract_branding_templates(tenant, modules)  # before emit: universal login body → file
+    unescape_prompt_custom_text(tenant)    # before emit: escaped one-line JSON body → readable JSON
     rewire_domain_audiences(tenant)        # before emit: sentinel for /api/v2/ audiences
     excluded = exclude_builtin_apis(tenant)  # before rewire: drop built-in Auth0 APIs (Mgmt + My Account) + scopes
     # counts reflect what is actually emitted (after exclusion of auto-provisioned resources)

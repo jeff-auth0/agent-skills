@@ -237,3 +237,29 @@ def extract_branding_templates(tenant: Tenant, modules_dir: Path) -> None:
                 _write(modules_dir / f"branding/{b.key}_universal_login.html",
                        _hcl_unescape(block["body"]))
                 block["body"] = _ref("branding/${each.key}_universal_login.html")
+
+
+def unescape_prompt_custom_text(tenant: Tenant) -> None:
+    """Decode the `body` of every auth0_prompt_custom_text into readable JSON.
+
+    The Auth0 CLI writes `body` as an escaped one-line string
+    (`"{\\n    \\"login\\": ..."`). python-hcl2 strips the outer quotes but leaves the
+    escapes, and tfvars heredocs do not process escapes, so Terraform would receive
+    literal backslash-n / backslash-quote and `jsondecode` would reject it.
+
+    The body is unescaped and pretty-printed (stable, readable diffs for resync).
+    A body that is not valid JSON is kept as the unescaped text.
+
+    `$${name}` sequences are left alone on purpose: Auth0 uses `$$` to escape a
+    literal `${`, and a Terraform heredoc turns `$${` back into `${`.
+    """
+    for r in tenant.of_type("auth0_prompt_custom_text"):
+        body = r.attrs.get("body")
+        if not isinstance(body, str):
+            continue
+        body = _hcl_unescape(body)
+        try:
+            body = _json.dumps(_json.loads(body), indent=2, ensure_ascii=False)
+        except (ValueError, TypeError):
+            pass  # not JSON: keep the unescaped text
+        r.attrs["body"] = body

@@ -86,3 +86,23 @@ def test_generated_project_has_no_vendor_specific_secret_wiring(tmp_path):
             for banned in ("azurerm", "key_vault", "aws_secretsmanager", "_wo_version",
                            "kv_secrets"):
                 assert banned not in txt, (str(f), banned)
+
+
+def test_plain_string_prompt_body_is_valid_json_in_tfvars(tmp_path):
+    # Regression: plain-string prompt bodies reached tfvars still escaped, so
+    # Terraform's jsondecode rejected them at plan time.
+    out = tmp_path / "p"
+    run(input_path=str(FIX / "prompt_custom_text_plain_string.tf"), out_dir=str(out),
+        env="dev", other_envs=[])
+    tfvars = (out / "envs" / "dev" / "terraform.tfvars").read_text()
+    # The body must be real multi-line JSON, not the one-line escaped form. (A
+    # backslash-quote is still legitimate: it is JSON's own escape for the quote
+    # inside the "quote" value, which the parse below proves is intact.)
+    assert '"{\\n' not in tfvars and "\\n    \\" not in tfvars
+    heredocs = re.findall(r"<<-(\w+)\n(.*?)\n\1", tfvars, re.S)
+    bodies = [b for _s, b in heredocs if '"login"' in b]
+    assert len(bodies) == 1
+    # a heredoc turns $${ into ${, so mimic that before parsing
+    parsed = json.loads(bodies[0].replace("$${", "${"))
+    assert parsed["login"] == {"title": "Log in to ${companyName}",
+                               "quote": 'say "hi"', "accent": "café"}
