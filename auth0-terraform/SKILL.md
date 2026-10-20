@@ -1,6 +1,6 @@
 ---
 name: auth0-terraform
-description: Use when you want to reverse-engineer an active Auth0 tenant into a structured, multi-environment Terraform project for replicating that tenant into new empty tenants. Runs `auth0 tf generate`, then restructures the flat output into a flat `modules/` directory (one `for_each` block per resource type with typed map variables), per-environment `envs/` directories, comment-scaffolded `secrets.tf` (injection templates for Azure KV, AWS SM, GitHub Actions, or env vars — no binding generated automatically), extracted action/DB-script files, and an optional Azure Pipelines YAML (only Azure Pipelines supported; GitHub Actions and GitLab CI not yet supported). Trigger on prompts like "generate terraform for my auth0 tenant", "reverse engineer auth0 to terraform", "structure my auth0 terraform".
+description: Use when you want to reverse-engineer an active Auth0 tenant into a structured, multi-environment Terraform project for replicating that tenant into new empty tenants. Runs `auth0 tf generate`, then restructures the flat output into a `modules/` directory (one `for_each` block per resource type with typed map variables), per-environment `envs/` directories, extracted action/DB-script files, a single `secrets` variable with a generated list of every key the customer must supply, and a customer-facing README. Vendor neutral - no CI/CD pipeline and no vault wiring is generated; the customer owns both. Trigger on prompts like "generate terraform for my auth0 tenant", "reverse engineer auth0 to terraform", "structure my auth0 terraform".
 ---
 
 # Auth0 → Terraform Project Generator
@@ -10,9 +10,13 @@ Generates a clean, multi-environment Terraform project from an active Auth0 tena
 ## Prerequisites check
 
 1. Run `auth0 --version`. If missing, tell the user to install the Auth0 CLI and stop.
-2. Run `python -c "import hcl2"` from the skill dir. If it fails, run
-   `python -m pip install -e .` in the skill directory.
-3. Run `auth0 tenants list`. Show the active tenant. **Ask the user to confirm
+2. Run `python3 -c "import hcl2"` from the skill dir. If it fails, run
+   `python3 -m pip install -e .` in the skill directory.
+3. Run `terraform version`. **Terraform 1.11 or later is required** (the Auth0
+   provider uses write-only attributes). The `terraform` binary bundled by the
+   Auth0 CLI is older and cannot validate the generated project; if the system
+   one is too old, tell the user to upgrade it and stop.
+4. Run `auth0 tenants list`. Show the active tenant. **Ask the user to confirm
    this is the correct tenant before continuing.** Do not proceed without confirmation.
    - If the active tenant is wrong, switch with `auth0 tenants use <domain>`.
 
@@ -41,7 +45,7 @@ unset AUTH0_API_TOKEN                         # api_token conflicts with client_
   `oauth2: "access_denied" "Unauthorized"` on read endpoints (prompts, branding,
   actions, …) and writes no config. Grant the scopes and retry.
 - These are read-only credentials for export; they are NOT written into the
-  generated project (each env supplies its own provider creds via tfvars/KV).
+  generated project (each env supplies its own provider credentials).
 
 #### How to obtain the credentials from the user (do this BEFORE the three questions)
 
@@ -77,6 +81,16 @@ in order of preference:
 
 Ask which option they prefer; do not assume. If a complete `auth0_generated.tf`
 already exists from a prior run, skip elicitation and use it.
+
+## Mode selection
+
+After the tenant is confirmed, ask **one question**:
+
+> **New project or resync?**
+> - **New project**: generate a fresh Terraform project from this tenant (continue below).
+> - **Resync**: pull changes made in the dashboard since the last export into an existing generated project (jump to "Resync an existing project").
+
+Do not continue without a clear answer.
 
 ## Ask these three questions (one message, in order)
 
@@ -116,7 +130,7 @@ already exists from a prior run, skip elicitation and use it.
    A per-resource error after this is fine; the config is written during the plan
    graph walk. Verify the file now exists before continuing.
 2. Run the transformer (from the skill directory), passing the user's output path
-   from question 4 as `--out`. Expand `~` before passing — the transformer runs
+   from question 3 as `--out`. Expand `~` before passing — the transformer runs
    from the skill dir, so relative paths resolve there, not the user's cwd:
    ```bash
    OUT=$(eval echo "<user-supplied-path>")   # expands ~ correctly
@@ -150,8 +164,10 @@ already exists from a prior run, skip elicitation and use it.
    *_override.tf
    *_override.tf.json
 
-   # Local variable overrides (secrets must never be committed)
+   # Local variable overrides. secrets.auto.tfvars.json is where a customer may put
+   # the `secrets` map (see README); it must never be committed.
    *.auto.tfvars
+   *.auto.tfvars.json
 
    # .terraform.lock.hcl is intentionally committed for provider version reproducibility
 
@@ -163,32 +179,25 @@ already exists from a prior run, skip elicitation and use it.
    Note: `terraform.tfvars` is **not** ignored — it contains non-secret config and
    is intentionally committed. `.terraform.lock.hcl` is **not** ignored — kept for
    provider version reproducibility.
-4. Run `terraform validate` using the **bundled binary** that `auth0 tf generate` placed in the
-   output dir — not the system `terraform`. The auth0 CLI bundles its own older binary:
+4. Run `terraform validate` with the **system** `terraform` (1.11 or later; checked in
+   Prerequisites):
    ```bash
-   cd /tmp/auth0tf-raw
-   ./terraform -chdir="$OUT/envs/<env>" init -backend=false
-   ./terraform -chdir="$OUT/envs/<env>" validate
+   terraform -chdir="$OUT/envs/<env>" init -backend=false
+   terraform -chdir="$OUT/envs/<env>" validate
    ```
-   If system `terraform` is newer and compatible, it can be used instead — but prefer the bundled
-   binary to avoid version mismatch errors. Report any errors.
-
-## Add CI/CD Pipeline (optional)
-
-After generation and validation succeed, ask the user:
-
-> "Add a CI/CD pipeline now? Options: `azure-pipelines` (generates azure-pipelines.yml with AzureKeyVault@2 secret injection) or `none` (skip — wire CI/CD manually later)."
-
-If the user chooses `azure-pipelines`, run:
-
-```bash
-python3 -m scripts.auth0tf.cli pipeline \
-  --project-dir "$OUT" \
-  --envs "<comma,separated,envs>" \
-  --cicd azure-pipelines
-```
-
-If `none`, skip entirely. The pipeline can always be added later by running the `pipeline` subcommand.
+   Do not use the binary the Auth0 CLI leaves in `/tmp/auth0tf-raw`: it is older
+   (1.5) and rejects the write-only attributes with "Write-only Attribute Not
+   Allowed". Report any validate errors.
+5. Check that the secrets contract works. Supply the keys listed in the generated
+   README with dummy values and confirm `plan` gets past variable evaluation:
+   ```bash
+   cd "$OUT/envs/<env>"
+   export TF_VAR_auth0_domain=x.au.auth0.com TF_VAR_auth0_client_id=x TF_VAR_auth0_client_secret=x
+   terraform plan -refresh=false          # no secrets: expect ONE "Missing required secrets" list
+   ```
+   With no `secrets` supplied the plan must stop with a single error that lists
+   every missing key. That list must match the README table. Do not put real values
+   in this check.
 
 ## Project Context File
 
@@ -215,28 +224,29 @@ _Auto-updated by agent after significant work. Keep under 150 lines — rotate o
 ---
 
 ## Status
-Terraform project generated from <tenant-domain>. Awaiting variable group population and first pipeline run.
+Terraform project generated from <tenant-domain>. Awaiting secrets, a state backend and the first plan.
 
 ## What's done
 - Generated Terraform project from <tenant-domain> (<N> resources across <M> resource types)
 - Environments scaffolded: <list>
-- Secrets wiring: <azure-kv|aws-sm|github-actions|env-vars>
-- CI/CD: <pipeline type or none>
+- Secrets: <N> keys the customer must supply through `var.secrets` (listed in README.md)
+- CI/CD and secret binding: left to the customer
 
 ## What's in progress
-- Nothing — project generated, needs pipeline/KV wiring before first apply
+- Nothing — project generated; the customer wires secrets and the state backend
 
 ## Decisions made
-- Secrets wired via comment scaffolds in secrets.tf, not hardcoded in tfvars
+- Secrets come from one `secrets` variable (flat dotted keys); no values are stored in the repo
+- The tool generates no vault or CI/CD wiring; that is the customer's responsibility
 - terraform.tfvars committed (non-secret config only)
 - .terraform.lock.hcl committed (provider version reproducibility)
 
 ## Next / backlog (ordered)
-1. Wire secrets using your chosen approach (see `secrets.tf` comment scaffolds)
-2. If using Azure Pipelines: populate variable group with azureServiceConnection, kvName<Env> per env
-3. Run pipeline plan stage for first env — verify expected adds (state is empty on first run)
+1. Provide the `secrets` map (keys listed in README.md, section Secrets)
+2. Configure the state backend in `envs/<env>/backend.tf`
+3. Run `terraform plan` for the first env — verify expected adds (state is empty on first run)
 4. Review plan output, then run apply
-5. Repeat plan → apply for remaining environments
+5. Populate and repeat for the remaining environments
 
 ## Open questions
 - (fill in any unresolved references flagged by the transformer)
@@ -259,30 +269,107 @@ After completing any significant implementation (plan step, apply, decision):
 3. Keep under 150 lines — rotate oldest Done items to `PROJECT_CONTEXT_ARCHIVE.md`.
 ```
 
+## Resync an existing project
+
+Use this when someone changed the tenant in the dashboard (ClickOps) and the existing
+project must catch up **without losing the customer's own edits**.
+
+### How it works
+Every managed file is merged three ways:
+
+| Version | Meaning |
+|---|---|
+| baseline | what the generator produced last time (`.auth0tf/baseline/`, stored in the project) |
+| tenant | what the generator produces now |
+| project | what is on disk, possibly edited by the customer |
+
+If the tenant did not change a file, it is left alone. If only the tenant changed it, the
+tenant version is taken. If both changed it, `git merge-file` merges the hunks and writes
+conflict markers where they overlap. Resync touches only `modules/`, `envs/<env>/`,
+`README.md` and `.auth0tf/`. Other environments, `backend.tf` edits, `.gitignore`,
+`PROJECT_CONTEXT.md` and files the customer added are never written.
+
+It works on a new branch (`auth0/resync`), commits there, and **never pushes**.
+
+### Steps
+1. **Show the tenant prominently** and confirm: `Syncing tenant: <tenant-domain>`.
+2. **Ask for the project path** (default: the current directory). It must contain
+   `modules/`, `envs/` and `.auth0tf/`. A project without `.auth0tf/` was generated
+   before resync existed: it cannot be resynced, so re-export it with the new-project flow.
+3. **Ask which env maps to this tenant** (list the directories under `envs/`).
+4. **Collect credentials** the same way as for a new project (env file recommended).
+5. **Pull fresh tenant state** into `/tmp/auth0tf-raw` (see Generate, step 1, including the
+   fallback when `auth0_generated.tf` is missing).
+6. **Dry run first**, from the skill directory, and show the report:
+   ```bash
+   python3 -m scripts.auth0tf.cli resync --input /tmp/auth0tf-raw \
+     --project "$PROJECT" --env <env> --dry-run
+   ```
+7. **Run it for real** once the user agrees (drop `--dry-run`). The project must have no
+   uncommitted changes in managed files; otherwise resync stops and changes nothing.
+8. **Report** to the user, from the command output:
+   - resources `+ added`, `~ changed`, `- removed`;
+   - **removed resources: warn clearly.** Applying a project that no longer has them will
+     destroy them in any tenant that does. A rename appears as a removal plus an addition;
+   - **new secret keys** the customer must add to `secrets` (otherwise `plan` fails);
+   - the branch name and commit, and `git diff auth0/resync~1 auth0/resync` to review;
+   - any **conflicts**: files with markers fail `terraform validate` on purpose. List them
+     and the commits that touched them; the customer resolves them by hand.
+9. **Update `PROJECT_CONTEXT.md`** if it exists: append to "What's done" (date, branch), and
+   put unresolved conflicts or new secret keys under "What's in progress".
+
+### Exit codes and flags
+`0` ok or nothing to do, `1` finished with conflicts, `2` refused (no baseline, wrong env,
+not a git repo, uncommitted managed files). Nothing is changed on a refusal.
+`--no-git` writes in place without a branch; `--branch NAME` picks the branch name.
+
+### Limits to tell the user
+- A resource renamed in the dashboard looks like a removal plus an addition.
+- Secret **values** are never seen; resync can only add or remove key names.
+- `terraform.tfvars` is one large file, so a customer edit right next to a tenant change can
+  conflict. Output is sorted and one attribute per line to keep that rare.
+
 ## Report
 
 Summarize: resource counts per type, environments created (populated vs skeleton),
-secrets wiring approach chosen, whether a pipeline was generated, and any unresolved references
-flagged for manual review (from the CLI output / README "Manual review needed").
+the number of secret keys the customer must supply, and any unresolved references
+or review items. Point the user at `README.md` in the output directory: its
+**Secrets** section is the authoritative list of keys, and its **Values that differ
+per environment** section lists what to change for each target tenant.
 
-## Secrets wiring
+## Secrets
 
-The generated `secrets.tf` contains comment scaffolds showing how to wire secrets for each resource type. Choose the approach that fits your infrastructure:
+The generated project has no vault, CI or cloud-provider code. All customer-supplied
+values go through **one variable**:
 
-- **Azure Key Vault** — add `azurerm_key_vault_secret` data sources (template in comments)
-- **AWS Secrets Manager** — add `aws_secretsmanager_secret_version` data sources (template in comments)
-- **GitHub Actions** — inject via `TF_VAR_<type>_secrets` env vars in your workflow
-- **Any CI / local** — `export TF_VAR_<type>_secrets='{"key":"value"}'`
+```hcl
+variable "secrets" { type = map(string), sensitive = true }
+```
 
-Auth0-generated secrets (client secrets, signing keys) live in Terraform state and do not need injection.
+Keys are flat and dotted: `<variable>.<resource key>.<name>`, with the resource key
+omitted for singletons (`email_provider.api_key`,
+`actions.my_action.API_KEY`, `connections.my_db.configuration.base_uri`).
+
+- `modules/secrets.tf` declares the variable and fails `plan` with one message that
+  lists every missing key.
+- `README.md` lists every required key, generated from the same data, so the two
+  cannot disagree.
+- How the customer fills the map (an env var `TF_VAR_secrets`, a gitignored
+  `secrets.auto.tfvars.json`, built from any vault or CI) is **their responsibility**.
+  Do not generate or suggest vendor-specific wiring.
+- Which values count as secrets is decided in one place, `secret_binding.py`, from
+  an explicit table (`secrets.py`) based on the provider schema, not on field names.
+  Sensitive settings the export cannot reveal (addons, CAPTCHA keys, push MFA ...) are
+  listed in the README for the customer to add by hand.
+
+Auth0-generated secrets (client secrets, signing keys) are created on apply and live
+in Terraform state; the customer never supplies them.
 
 ## Notes
 
-- This skill replicates to NEW tenants. Auth0-generated secrets (client secrets,
-  signing keys) stay in Terraform state — no KV injection needed for these.
-- CI/CD pipeline generation is decoupled from the main transform. The `transform`
-  subcommand never generates a pipeline; use the separate `pipeline` subcommand
-  (or the "Add CI/CD Pipeline" step above) to add one after generation.
+- This skill replicates to NEW tenants.
+- No CI/CD pipeline is generated. Pipelines, secret stores and state backends belong
+  to the customer; the README says what is needed.
 - Inter-resource ID references are rewired to Terraform references automatically;
   any that could not be resolved are listed for manual review.
 - Built-in Auth0 resource servers — the **Management API** (`/api/v2/`) and the
@@ -291,3 +378,7 @@ Auth0-generated secrets (client secrets, signing keys) live in Terraform state a
   with the tenant's built-ins, and would hardcode the source domain. Excluded
   resources are listed in the CLI output and the README. Custom resource servers
   are kept.
+- `.auth0tf/` (baseline and state used by resync) is part of the project: commit it.
+- The `connections` variable is declared `type = any` because connections with
+  differently shaped nested blocks cannot share one object type (see
+  `LOOSELY_TYPED` in `emit_modules.py`).

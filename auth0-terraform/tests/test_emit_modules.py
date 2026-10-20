@@ -120,32 +120,13 @@ def test_for_each_scalar_list_nested_refs_emit_lookups(tmp_path):
     assert "enabled_clients_keys" in variables
 
 
-def test_action_secrets_block_schema_and_variable(tmp_path):
-    # actions get a dynamic secrets block (hardcoded merged with KV), explicit
-    # map(string)/list(string) schema, and the actions_kv_secrets variable.
-    t = Tenant()
-    t.add(Resource("auth0_action", "act_x", "1",
-                   {"name": "act-x", "runtime": "node22",
-                    "secrets": {"LOGO": ""}, "kv_secrets": ["CLIENT_SECRET"]}))
-    emit_modules(t, tmp_path)
-    actions = (tmp_path / "actions.tf").read_text()
-    assert 'dynamic "secrets"' in actions
-    assert 'try(each.value.secrets, {})' in actions
-    assert 'var.actions_kv_secrets["${each.key}::${n}"]' in actions
-    assert "name  = secrets.key" in actions and "value = secrets.value" in actions
-    variables = (tmp_path / "variables.tf").read_text()
-    assert "optional(map(string), {})" in variables    # secrets
-    assert "optional(list(string), [])" in variables    # kv_secrets
-    assert 'variable "actions_kv_secrets"' in variables
-
-
 def test_action_reference_secret_emits_locals_and_lookup(tmp_path):
     # reference-valued action secrets go into a locals block (resource refs can't
     # live in tfvars) and are merged into the secrets block via lookup per action.
     t = Tenant()
     t.add(Resource("auth0_form", "form_profile_enrollement", "", {"name": "f"}))
     t.add(Resource("auth0_action", "progressive_profiling", "1",
-                   {"name": "progressive-profiling", "secrets": {}, "kv_secrets": [],
+                   {"name": "progressive-profiling", "secret_names": [],
                     "ref_secrets": {"PROGRESSIVE_PROFILING_FORM_ID":
                                     "auth0_form.form_profile_enrollement.id"}}))
     emit_modules(t, tmp_path)
@@ -154,26 +135,6 @@ def test_action_reference_secret_emits_locals_and_lookup(tmp_path):
     assert ("PROGRESSIVE_PROFILING_FORM_ID = "
             "auth0_form.form_profile_enrollement.id") in txt
     assert "lookup(local.action_secret_refs, each.key, {})" in txt
-
-
-def test_email_provider_credentials_injected_from_kv(tmp_path):
-    # the configured provider's credential fields come from var.email_provider_credentials,
-    # the generic (null) credentials block is replaced, and the KV variable is declared.
-    t = Tenant()
-    t.add(Resource("auth0_email_provider", "email_provider", "",
-                   {"name": "ms365", "enabled": True,
-                    "credentials": [{"ms365_client_id": None,
-                                     "ms365_client_secret": None,
-                                     "ms365_tenant_id": None}]},
-                   block_fields={"credentials"}))
-    emit_modules(t, tmp_path)
-    txt = (tmp_path / "email_provider.tf").read_text()
-    assert "credentials {" in txt
-    assert ('ms365_client_secret = var.email_provider_credentials'
-            '["ms365_client_secret"]') in txt
-    assert "each.value.credentials" not in txt  # generic dynamic block replaced
-    variables = (tmp_path / "variables.tf").read_text()
-    assert 'variable "email_provider_credentials"' in variables
 
 
 def test_literal_form_body_ref_emits_file_expression(tmp_path):
@@ -208,3 +169,94 @@ def test_unknown_type_emitted_via_generic_fallback(tmp_path):
     assert 'resource "auth0_widget" "this"' in txt
     assert "for_each = var.widget" in txt
     assert generic == ["auth0_widget"]
+
+
+def test_action_secrets_come_from_var_secrets(tmp_path):
+    t = Tenant()
+    t.add(Resource("auth0_action", "act_x", "1",
+                   {"name": "act-x", "runtime": "node22", "secret_names": ["A", "B"]}))
+    emit_modules(t, tmp_path)
+    actions = (tmp_path / "actions.tf").read_text()
+    assert 'dynamic "secrets"' in actions
+    assert 'var.secrets["actions.${each.key}.${n}"]' in actions
+    assert "name  = secrets.key" in actions and "value = secrets.value" in actions
+    assert "kv_secrets" not in actions and "secrets_wo_version" not in actions
+    assert "SECRETS" in actions                 # explanatory comment
+    variables = (tmp_path / "variables.tf").read_text()
+    assert "secret_names" in variables and "optional(list(string), [])" in variables
+
+
+def test_module_secrets_tf_declares_variable_and_required_key_check(tmp_path):
+    t = Tenant()
+    t.add(Resource("auth0_action", "act_x", "1",
+                   {"name": "act-x", "secret_names": ["A"]}))
+    emit_modules(t, tmp_path)
+    txt = (tmp_path / "secrets.tf").read_text()
+    assert 'variable "secrets"' in txt and "map(string)" in txt and "sensitive" in txt
+    assert '"actions.${k}.${n}"' in txt
+    assert "missing_secret_keys" in txt
+    assert 'precondition' in txt and "Missing required secrets" in txt
+    assert "nonsensitive(keys(var.secrets))" in txt
+
+
+def test_email_provider_credentials_render_as_static_block(tmp_path):
+    t = Tenant()
+    t.add(Resource("auth0_email_provider", "email_provider", "",
+                   {"name": "mailgun", "enabled": True,
+                    "credentials": [{"api_key": None}]}, block_fields={"credentials"}))
+    from auth0tf.secret_binding import bind_secrets
+    bind_secrets(t)
+    emit_modules(t, tmp_path)
+    txt = (tmp_path / "email_provider.tf").read_text()
+    assert "credentials {" in txt
+    assert 'api_key = var.secrets["email_provider.api_key"]' in txt
+    assert "each.value.credentials" not in txt
+    secrets_tf = (tmp_path / "secrets.tf").read_text()
+    assert '"email_provider.api_key"' in secrets_tf
+
+
+def test_shared_block_secrets_are_bound_only_for_resources_that_list_them(tmp_path):
+    t = Tenant()
+    t.add(Resource("auth0_log_stream", "s", "1",
+                   {"name": "S", "type": "splunk", "sink": [{"splunk_domain": "h"}]},
+                   block_fields={"sink"}))
+    from auth0tf.secret_binding import bind_secrets
+    bind_secrets(t)
+    emit_modules(t, tmp_path)
+    txt = (tmp_path / "log_streams.tf").read_text()
+    import re
+    assert re.search(r'splunk_token\s+= contains\(each\.value\.secret_names, "splunk_token"\) '
+                     r'\? var\.secrets\["log_streams\.\$\{each\.key\}\.splunk_token"\] : null', txt)
+
+
+def test_no_write_only_or_per_type_secret_variables_are_emitted(tmp_path):
+    from auth0tf.secret_binding import bind_secrets
+    t = _tenant()
+    t.add(Resource("auth0_action", "a", "1", {"name": "a", "secret_names": ["X"]}))
+    bind_secrets(t)
+    emit_modules(t, tmp_path)
+    for f in tmp_path.glob("*.tf"):
+        txt = f.read_text()
+        for banned in ("_wo_version", "_secrets[", "kv_secrets", "email_provider_credentials"):
+            assert banned not in txt, (f.name, banned)
+
+
+def test_connections_variable_is_untyped_with_explanation(tmp_path):
+    # Connections with differently shaped nested blocks cannot share one object
+    # type, so the variable is `any` and says why.
+    t = Tenant()
+    t.add(Resource("auth0_connection", "db_a", "1",
+                   {"name": "a", "strategy": "auth0", "options": [{"x": 1}]},
+                   block_fields={"options"}))
+    emit_modules(t, tmp_path)
+    variables = (tmp_path / "variables.tf").read_text()
+    assert 'variable "connections" {\n  type    = any' in variables
+    assert "cannot find a common base type" not in variables
+    assert "LOOSELY_TYPED" in variables      # explains where the rule lives
+    assert "map(object" not in variables.split('variable "connections"')[1].split("}")[0]
+
+
+def test_other_types_keep_their_strict_object_type(tmp_path):
+    emit_modules(_tenant(), tmp_path)
+    variables = (tmp_path / "variables.tf").read_text()
+    assert "map(object(" in variables.split('variable "applications"')[1]

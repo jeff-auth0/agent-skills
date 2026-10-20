@@ -96,25 +96,27 @@ def test_extract_action_code_unescapes_to_real_source(tmp_path):
     assert js.count("\n") >= 4                     # genuinely multi-line
 
 
-def test_scaffold_action_secrets_splits_kv_and_hardcoded():
-    # secret names referenced in code are discovered and split: sensitive-looking
-    # → kv_secrets (list), the rest → secrets (name->"" map to fill in tfvars).
+def test_scaffold_action_secrets_records_names_only():
+    # every secret name the code reads is listed (sorted, de-duplicated); no
+    # values, no guess at which names are "really" sensitive.
     code = ("exports.onExecutePostLogin = async (event, api) => {\n"
             "  const url = event.secrets.TOYOTA_LOGO_URL;\n"
             "  const base = secrets.IG_BASE_URL;\n"
+            "  const again = secrets.IG_BASE_URL;\n"
             "  const sec = secrets.INTEGRATION_GATEWAY_CLIENT_SECRET;\n"
             "};")
     t = Tenant()
     t.add(Resource("auth0_action", "a", "1", {"name": "a", "code": code}))
     scaffold_action_secrets(t)
     a = t.of_type("auth0_action")[0]
-    assert a.attrs["secrets"] == {"IG_BASE_URL": "", "TOYOTA_LOGO_URL": ""}
-    assert a.attrs["kv_secrets"] == ["INTEGRATION_GATEWAY_CLIENT_SECRET"]
+    assert a.attrs["secret_names"] == [
+        "IG_BASE_URL", "INTEGRATION_GATEWAY_CLIENT_SECRET", "TOYOTA_LOGO_URL"]
+    assert "secrets" not in a.attrs and "kv_secrets" not in a.attrs
 
 
 def test_scaffold_action_secrets_routes_form_id_to_reference():
-    # a *_FORM_ID secret resolves to the best-matching auth0_form reference,
-    # not a hardcoded/KV value.
+    # a *_FORM_ID secret resolves to the best-matching auth0_form reference and is
+    # NOT a customer secret.
     t = Tenant()
     t.add(Resource("auth0_form", "form_profile_enrollement", "", {"name": "f"}))
     t.add(Resource("auth0_form", "mfa_enrollement", "", {"name": "m"}))
@@ -126,9 +128,7 @@ def test_scaffold_action_secrets_routes_form_id_to_reference():
     assert a.attrs["ref_secrets"] == {
         "PROGRESSIVE_PROFILING_FORM_ID": "auth0_form.form_profile_enrollement.id"
     }
-    # not duplicated as a hardcoded/KV secret
-    assert "PROGRESSIVE_PROFILING_FORM_ID" not in a.attrs.get("secrets", {})
-    assert "PROGRESSIVE_PROFILING_FORM_ID" not in a.attrs.get("kv_secrets", [])
+    assert "PROGRESSIVE_PROFILING_FORM_ID" not in a.attrs["secret_names"]
 
 
 def test_scaffold_action_secrets_noop_without_refs():
@@ -137,7 +137,7 @@ def test_scaffold_action_secrets_noop_without_refs():
                    {"name": "a", "code": "exports.onExecutePostLogin = () => {};"}))
     scaffold_action_secrets(t)
     a = t.of_type("auth0_action")[0]
-    assert "secrets" not in a.attrs and "kv_secrets" not in a.attrs
+    assert "secret_names" not in a.attrs and "ref_secrets" not in a.attrs
 
 
 def test_form_flow_body_cross_refs_wrapped_with_replace(tmp_path):
@@ -190,3 +190,50 @@ def test_extract_db_scripts_unescapes_in_place(tmp_path):
     assert cs["get_user"] == "function get_user(email, callback) {}"
     # no files written for connection scripts
     assert not (tmp_path / "scripts").exists()
+
+
+def test_unescape_prompt_custom_text_decodes_and_pretty_prints():
+    from auth0tf.extract import unescape_prompt_custom_text
+    t = Tenant()
+    t.add(Resource("auth0_prompt_custom_text", "en_login", "",
+                   {"prompt": "login", "language": "en",
+                    "body": '{\\n    \\"login\\": {\\"title\\": \\"Log in to $${co}\\"}\\n}'}))
+    t.add(Resource("auth0_prompt_custom_text", "en_signup", "", {"body": "{}"}))
+    t.add(Resource("auth0_prompt_custom_text", "weird", "", {"body": "not json \\\\n"}))
+    unescape_prompt_custom_text(t)
+    login, signup, weird = t.of_type("auth0_prompt_custom_text")
+    assert "\\n" not in login.attrs["body"]       # no literal backslash-n left
+    assert '\\"' not in login.attrs["body"]       # no literal backslash-quote left
+    assert '"title": "Log in to $${co}"' in login.attrs["body"]   # $$ untouched
+    assert login.attrs["body"].count("\n") >= 3   # real newlines: multi-line
+    assert signup.attrs["body"] == "{}"
+    assert weird.attrs["body"] == "not json \\n"              # non-JSON: unescaped only
+
+
+def test_extracted_action_code_resolves_hcl_template_escapes(tmp_path):
+    # The Auth0 CLI exports JS `${x}` as `$${x}` (HCL escape). The action file is read
+    # with file(), which does not unescape, so it must be resolved when written.
+    from auth0tf.extract import extract_code
+    t = Tenant()
+    code = "logger.info(`user $${event.user.user_id} 100%%{ok} real: ${kept}`);"
+    t.add(Resource("auth0_action", "a", "1", {"name": "a", "code": code}))
+    extract_code(t, tmp_path)
+    js = (tmp_path / "code/actions_code/a.js").read_text()
+    assert "`user ${event.user.user_id} 100%{ok}" in js
+    assert "$${" not in js and "%%{" not in js
+
+
+def test_template_unescape_helper():
+    from auth0tf.hclstr import hcl_template_unescape as u
+    assert u("a $${b} %%{c}") == "a ${b} %{c}"
+    assert u("no escapes ${x}") == "no escapes ${x}"      # a single $ is left alone
+    assert u("$$${x}") == "$${x}"                          # same left-to-right result as HCL
+    assert u("plain") == "plain"
+
+
+def test_other_extracted_bodies_resolve_escapes_too(tmp_path):
+    from auth0tf.extract import extract_email_bodies
+    t = Tenant()
+    t.add(Resource("auth0_email_template", "v", "", {"template": "verify", "body": "Hi $${user.name}"}))
+    extract_email_bodies(t, tmp_path)
+    assert (tmp_path / "code/email_templates/verify.liquid").read_text() == "Hi ${user.name}"

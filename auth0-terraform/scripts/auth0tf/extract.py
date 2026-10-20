@@ -13,6 +13,7 @@ import json as _json
 import re
 from pathlib import Path
 
+from .hclstr import hcl_template_unescape as _template_unescape
 from .hclstr import hcl_unescape as _hcl_unescape
 from .model import Tenant
 
@@ -23,14 +24,6 @@ _FLOW_BODY_FIELDS = ("actions",)
 
 # Discovers `secrets.NAME` / `event.secrets.NAME` references in action code.
 _SECRET_REF_RE = re.compile(r"\bsecrets\.([A-Za-z_][A-Za-z0-9_]*)")
-
-
-def _action_secret_is_kv(name: str) -> bool:
-    """Heuristic: route obviously-sensitive secret names to Key Vault, leaving
-    plain config (URLs, ids, flags) as hardcoded tfvars values."""
-    u = name.upper()
-    return ("SECRET" in u or "PASSWORD" in u or "PRIVATE_KEY" in u
-            or "CREDENTIAL" in u or u.endswith("_KEY") or u.endswith("_TOKEN"))
 
 
 def _tokens(s: str) -> set[str]:
@@ -56,13 +49,18 @@ def _reference_expr(tenant: Tenant, action_key: str, name: str) -> str | None:
 
 
 def scaffold_action_secrets(tenant: Tenant) -> None:
-    """Scaffold auth0_action `secrets` from the names referenced in each action's
-    code. The Auth0 API never returns secret VALUES, so the CLI emits no secrets
-    block — values must be supplied in IaC. For each discovered `secrets.<NAME>`:
-      - resolves to a managed resource id -> `ref_secrets` (name -> TF expression;
-        emitted as a module-side reference, not hardcoded — see emit_modules)
-      - sensitive-looking name            -> `kv_secrets` (list; from Key Vault)
-      - everything else                   -> `secrets`    (name->"" map; tfvars)
+    """Record, per auth0_action, the NAMES of the secrets its code reads.
+
+    The Auth0 API never returns secret VALUES, so the CLI emits no secrets block.
+    For each discovered `secrets.<NAME>`:
+      - it resolves to a managed resource id -> `ref_secrets` (name -> Terraform
+        expression, emitted module-side as a reference; not a customer secret)
+      - everything else                      -> `secret_names` (list). Only the
+        names go to tfvars; the values come from `var.secrets` (see secret_binding).
+
+    Auth0 stores action configuration (ids, URLs, flags) as secrets too, so no
+    attempt is made to guess which names are "really" sensitive: every name is
+    listed and the customer decides how to store each one.
     Note: secrets accessed via destructuring (e.g. `const {x} = event.secrets`)
     are not auto-discovered — add those names manually.
     """
@@ -74,25 +72,26 @@ def scaffold_action_secrets(tenant: Tenant) -> None:
         if not names:
             continue
         refs: dict[str, str] = {}
-        hard: dict[str, str] = {}
-        kv: list[str] = []
+        plain: list[str] = []
         for n in names:
             expr = _reference_expr(tenant, a.key, n)
             if expr:
                 refs[n] = expr
-            elif _action_secret_is_kv(n):
-                kv.append(n)
             else:
-                hard[n] = ""
-        a.attrs["secrets"] = hard
-        a.attrs["kv_secrets"] = kv
+                plain.append(n)
+        a.attrs["secret_names"] = plain
         if refs:
             a.attrs["ref_secrets"] = refs
 
 
 def _write(path: Path, content: str) -> None:
+    """Write an extracted body to disk.
+
+    Every file written here is read back with Terraform's `file()`, which does not
+    process `$${` / `%%{` escapes, so they are resolved now (see hclstr).
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content)
+    path.write_text(_template_unescape(content))
 
 
 def _ref(rel: str) -> dict:
@@ -244,3 +243,29 @@ def extract_branding_templates(tenant: Tenant, modules_dir: Path) -> None:
                 _write(modules_dir / f"branding/{b.key}_universal_login.html",
                        _hcl_unescape(block["body"]))
                 block["body"] = _ref("branding/${each.key}_universal_login.html")
+
+
+def unescape_prompt_custom_text(tenant: Tenant) -> None:
+    """Decode the `body` of every auth0_prompt_custom_text into readable JSON.
+
+    The Auth0 CLI writes `body` as an escaped one-line string
+    (`"{\\n    \\"login\\": ..."`). python-hcl2 strips the outer quotes but leaves the
+    escapes, and tfvars heredocs do not process escapes, so Terraform would receive
+    literal backslash-n / backslash-quote and `jsondecode` would reject it.
+
+    The body is unescaped and pretty-printed (stable, readable diffs for resync).
+    A body that is not valid JSON is kept as the unescaped text.
+
+    `$${name}` sequences are left alone on purpose: Auth0 uses `$$` to escape a
+    literal `${`, and a Terraform heredoc turns `$${` back into `${`.
+    """
+    for r in tenant.of_type("auth0_prompt_custom_text"):
+        body = r.attrs.get("body")
+        if not isinstance(body, str):
+            continue
+        body = _hcl_unescape(body)
+        try:
+            body = _json.dumps(_json.loads(body), indent=2, ensure_ascii=False)
+        except (ValueError, TypeError):
+            pass  # not JSON: keep the unescaped text
+        r.attrs["body"] = body

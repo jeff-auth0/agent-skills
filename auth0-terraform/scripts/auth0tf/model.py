@@ -31,8 +31,39 @@ class Resource:
 
 
 @dataclass
+class SecretSpec:
+    """One customer-supplied secret, as it appears in ``var.secrets``.
+
+    The binder (secret_binding.py) creates these while rewriting resource
+    attributes into ``var.secrets[...]`` lookups. The same list drives the
+    required-keys check in envs/<env>/secrets.tf and the README secrets table, so
+    the documentation can never drift from the generated Terraform.
+    """
+    key: str            # exact key the customer must provide, e.g. "email_provider.api_key"
+    tf_type: str        # resource type it belongs to, e.g. "auth0_email_provider"
+    resource: str       # resource key within that type
+    purpose: str        # one-line human description
+    hint: str = "<value>"   # placeholder shown in the README template
+
+
+@dataclass
 class Tenant:
     resources: list[Resource] = field(default_factory=list)
+
+    # --- results of secret_binding.bind_secrets(); read by the emitters ---------
+    # Every customer-supplied secret (drives secrets.tf checks and the README).
+    secrets: list[SecretSpec] = field(default_factory=list)
+    # tf_type -> {top-level attribute: Terraform expression}. The attribute is
+    # emitted as `attr = <expr>` instead of reading each.value.<attr>.
+    field_overrides: dict[str, dict[str, str]] = field(default_factory=dict)
+    # tf_type -> {block: {sub-attribute: expression}}. Applied INSIDE the dynamic
+    # block of a type with several instances (connection options, log stream sink).
+    block_overrides: dict[str, dict[str, dict[str, str]]] = field(default_factory=dict)
+    # tf_type -> {block: {attribute: expression}}. Replaces the block with a static
+    # `block { ... }` (singleton types such as the email provider credentials).
+    static_blocks: dict[str, dict[str, dict[str, str]]] = field(default_factory=dict)
+    # Secrets the tool cannot bind automatically; listed in the README.
+    review_notes: list[str] = field(default_factory=list)
 
     def add(self, r: Resource) -> None:
         self.resources.append(r)
