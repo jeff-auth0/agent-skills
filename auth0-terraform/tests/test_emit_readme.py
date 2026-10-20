@@ -32,6 +32,36 @@ def test_readme_secrets_table_lists_every_key(tmp_path):
     assert "secrets.auto.tfvars.json" in txt
 
 
+def _template(txt):
+    import json
+    import re
+    return json.loads(re.search(r"### Template.*?```json\n(.*?)\n```", txt, re.S).group(1))
+
+
+def test_readme_template_lists_every_key_and_is_valid_json(tmp_path):
+    secrets = [SecretSpec(f"actions.a.K{i}", "auth0_action", "a", "x") for i in range(5)]
+    secrets.append(SecretSpec("flow_vault_connections.v.setup", "auth0_flow_vault_connection",
+                              "v", "x", hint='{"<field>": "<value>"}'))
+    txt = _readme(tmp_path, secrets=secrets)
+    tpl = _template(txt)["secrets"]
+    assert list(tpl) == [s.key for s in secrets]          # all keys, same order as the table
+    assert tpl["actions.a.K0"] == "<value>"
+    assert tpl["flow_vault_connections.v.setup"] == '{"<field>": "<value>"}'
+    assert "all 6 keys" in txt
+    assert "do not delete any line" in txt
+    assert "stored as a string" in txt                     # explains the JSON-valued key
+
+
+def test_readme_template_note_only_appears_when_a_key_needs_it(tmp_path):
+    txt = _readme(tmp_path, secrets=[SecretSpec("a.b.C", "auth0_action", "b", "x")])
+    assert "stored as a string" not in txt
+
+
+def test_readme_no_longer_uses_the_ambiguous_sentence(tmp_path):
+    txt = _readme(tmp_path, secrets=[SecretSpec("a.b.C", "auth0_action", "b", "x")])
+    assert "Add one entry per row" not in txt
+
+
 def test_readme_states_customer_owns_binding_and_names_no_vendor(tmp_path):
     txt = _readme(tmp_path, secrets=[])
     assert "your responsibility" in txt

@@ -114,14 +114,14 @@ class _Binder:
         self._seen: set[str] = set()
 
     def spec(self, tf_type: str, resource: Resource, path: tuple[str, ...], attr: str,
-             purpose: str) -> str:
+             purpose: str, hint: str = "<value>") -> str:
         """Register one secret; returns the Terraform key template for it."""
         var = _var_name(tf_type)
         singleton = tf_type in SINGLETON_TYPES
         key = concrete_key(var, singleton, resource.key, path, attr)
         if key not in self._seen:
             self._seen.add(key)
-            self.t.secrets.append(SecretSpec(key, tf_type, resource.key, purpose))
+            self.t.secrets.append(SecretSpec(key, tf_type, resource.key, purpose, hint))
         return key_template(var, singleton, path, attr)
 
 
@@ -148,10 +148,12 @@ def _bind_input_fields(b: _Binder) -> None:
             continue
         for r in rs:
             r.attrs.pop(attr)
-            template = b.spec(tf_type, r, (), attr,
-                              f"`{attr}` of {tf_type} `{r.key}`" +
-                              (" (a JSON object, passed to the provider as a map)"
-                               if kind == "json" else ""))
+            template = b.spec(
+                tf_type, r, (), attr,
+                f"`{attr}` of {tf_type} `{r.key}`" +
+                (" (a JSON object, passed to the provider as a map)" if kind == "json" else ""),
+                # a JSON object stored as a string value: json.dumps escapes it correctly
+                hint='{"<field>": "<value>"}' if kind == "json" else "<value>")
         expr = index_expr(template)
         if kind == "json":
             expr = f"jsondecode({expr})"

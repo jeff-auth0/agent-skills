@@ -24,12 +24,13 @@ def _secrets_section(secrets: list[SecretSpec], review_notes: list[str]) -> list
         "Terraform in either of these ways:", "",
         "| Method | How |",
         "|---|---|",
-        "| Environment variable | `export TF_VAR_secrets='{\"<key>\": \"<value>\", ...}'` (a JSON object) |",
-        "| File | `envs/<env>/secrets.auto.tfvars.json` containing `{\"secrets\": {\"<key>\": \"<value>\"}}` "
-        "(ignored by `.gitignore`; never commit it) |", "",
+        "| File | Save the template below as `envs/<env>/secrets.auto.tfvars.json`. "
+        "Terraform loads it automatically. It is ignored by `.gitignore`; never commit it. |",
+        "| Environment variable | `export TF_VAR_secrets='{...}'`, where `{...}` is the object "
+        "inside `\"secrets\"` in the template, as one line of JSON. |", "",
         "Rules:", "",
         "- Keys are **case sensitive** and must match exactly.",
-        "- Every key in the table below is **required**. `terraform plan` fails with one "
+        "- **Every key in the table is required.** `terraform plan` fails with one "
         "message listing any that are missing.",
         "- Values are written to the Terraform state. Use an encrypted, access-controlled "
         "state backend.",
@@ -43,11 +44,17 @@ def _secrets_section(secrets: list[SecretSpec], review_notes: list[str]) -> list
                 "| Key | Used by | Purpose |", "|---|---|---|"]
         for s in secrets:
             out.append(f"| `{s.key}` | `{s.tf_type}` `{s.resource}` | {s.purpose} |")
-        example = {s.key: "<value>" for s in secrets[:3]}
-        out += ["", "### Example", "",
-                "```bash", f"export TF_VAR_secrets='{json.dumps(example)}'", "```", "",
-                "Add one entry per row of the table above."]
-        out += [""]
+
+        template = {"secrets": {s.key: s.hint for s in secrets}}
+        out += ["", "### Template", "",
+                f"This file lists **all {len(secrets)} keys**. Replace every `<value>` with the "
+                "real value; do not delete any line, or `terraform plan` will report the "
+                "key as missing.", "",
+                "```json", json.dumps(template, indent=2), "```", ""]
+        if any(s.hint != "<value>" for s in secrets):
+            out += ["A value written as `{\"<field>\": \"<value>\"}` is itself a JSON object, "
+                    "stored as a string. In the file, escape its quotes (`\\\"`) or build the "
+                    "file with a tool that does it for you.", ""]
     if review_notes:
         out += ["### Sensitive settings not handled automatically", "",
                 "The Auth0 provider accepts secrets on these settings, but the export "

@@ -43,6 +43,7 @@ class SecretSpec:
     tf_type: str        # resource type it belongs to, e.g. "auth0_email_provider"
     resource: str       # resource key within that type
     purpose: str        # one-line human description
+    hint: str = "<value>"   # placeholder shown in the README template
 
 
 @dataclass

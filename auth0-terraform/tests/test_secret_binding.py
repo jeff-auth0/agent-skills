@@ -135,3 +135,11 @@ def test_tenant_without_secrets_produces_none():
 def test_unbound_sensitive_settings_are_reported_for_present_types():
     t = _bind(Resource("auth0_client", "app", "1", {"name": "App"}))
     assert any("addons" in n for n in t.review_notes)
+
+
+def test_json_valued_secret_carries_a_hint_others_use_the_default():
+    t = _bind(Resource("auth0_flow_vault_connection", "v", "", {"name": "v", "setup": None}),
+              Resource("auth0_action", "a", "1", {"name": "a", "secret_names": ["K"]}))
+    hints = {s.key: s.hint for s in t.secrets}
+    assert hints["flow_vault_connections.v.setup"] == '{"<field>": "<value>"}'
+    assert hints["actions.a.K"] == "<value>"
