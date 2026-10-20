@@ -13,6 +13,7 @@ The skill **exports, modularizes and documents**. It does not wire secrets to a 
    - `secrets`: a single variable holding every customer-supplied value, with `modules/secrets.tf` failing the plan with a list of any missing keys.
    - `README.md`: prerequisites, getting started, and **the full list of secret keys the customer must supply**.
    - `.gitignore`, `PROJECT_CONTEXT.md`, `CLAUDE.md`.
+3. Later, **resyncs** dashboard changes into the project without losing the customer's own edits (see below).
 
 ## Install
 
@@ -63,6 +64,7 @@ The agent will:
 │   ├── test/                   empty skeleton
 │   └── prod/                   empty skeleton
 ├── README.md                   customer-facing guide, including every required secret key
+├── .auth0tf/                   baseline used by resync (commit it)
 ├── .gitignore
 ├── PROJECT_CONTEXT.md
 └── CLAUDE.md
@@ -87,6 +89,22 @@ Keys are `<variable>.<resource key>.<name>`; the resource key is omitted for sin
 - **How the map is filled is the customer's responsibility.** `TF_VAR_secrets` (a JSON object) and a gitignored `secrets.auto.tfvars.json` both work; any vault or CI system can build either. The skill generates no vendor-specific wiring.
 - Which values count as secrets comes from an explicit table (`secrets.py`) derived from the provider schema, not from field names. Sensitive settings the export cannot reveal (addons, CAPTCHA keys, push MFA) are listed in the README for the customer to add by hand.
 - Auth0-generated secrets (client secrets, signing keys) are created on apply and kept in Terraform state. The customer never supplies them.
+
+## Resync
+
+When the tenant is changed in the dashboard, pull just those changes into the existing project:
+
+```bash
+python3 -m scripts.auth0tf.cli resync --input /tmp/auth0tf-raw --project <dir> --env dev --dry-run
+```
+
+- Each managed file is merged three ways: **baseline** (what was generated last time, stored in `.auth0tf/`), **tenant** (generated now) and **project** (on disk). Customer edits survive; overlapping edits become conflict markers.
+- Only `modules/`, `envs/<env>/` and `README.md` change. Other environments, `backend.tf`, `.gitignore` and files you added are never touched.
+- Works on a new branch (`auth0/resync`), commits there and **never pushes**.
+- The report lists `+ added`, `~ changed` and `- removed` resources (with a **destroy warning** for removals) and any **newly required secret keys**.
+- Refuses, changing nothing, when there is no baseline, the env is wrong, the project is not a git repo or managed files have uncommitted changes. Projects exported before resync existed need a re-export.
+
+Limits: a rename looks like a removal plus an addition; secret values are never seen.
 
 ## What is not replicated
 

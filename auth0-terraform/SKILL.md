@@ -82,6 +82,16 @@ in order of preference:
 Ask which option they prefer; do not assume. If a complete `auth0_generated.tf`
 already exists from a prior run, skip elicitation and use it.
 
+## Mode selection
+
+After the tenant is confirmed, ask **one question**:
+
+> **New project or resync?**
+> - **New project**: generate a fresh Terraform project from this tenant (continue below).
+> - **Resync**: pull changes made in the dashboard since the last export into an existing generated project (jump to "Resync an existing project").
+
+Do not continue without a clear answer.
+
 ## Ask these three questions (one message, in order)
 
 1. Environment name for this active tenant (e.g. `dev`, `staging`, `prod`).
@@ -259,6 +269,66 @@ After completing any significant implementation (plan step, apply, decision):
 3. Keep under 150 lines — rotate oldest Done items to `PROJECT_CONTEXT_ARCHIVE.md`.
 ```
 
+## Resync an existing project
+
+Use this when someone changed the tenant in the dashboard (ClickOps) and the existing
+project must catch up **without losing the customer's own edits**.
+
+### How it works
+Every managed file is merged three ways:
+
+| Version | Meaning |
+|---|---|
+| baseline | what the generator produced last time (`.auth0tf/baseline/`, stored in the project) |
+| tenant | what the generator produces now |
+| project | what is on disk, possibly edited by the customer |
+
+If the tenant did not change a file, it is left alone. If only the tenant changed it, the
+tenant version is taken. If both changed it, `git merge-file` merges the hunks and writes
+conflict markers where they overlap. Resync touches only `modules/`, `envs/<env>/`,
+`README.md` and `.auth0tf/`. Other environments, `backend.tf` edits, `.gitignore`,
+`PROJECT_CONTEXT.md` and files the customer added are never written.
+
+It works on a new branch (`auth0/resync`), commits there, and **never pushes**.
+
+### Steps
+1. **Show the tenant prominently** and confirm: `Syncing tenant: <tenant-domain>`.
+2. **Ask for the project path** (default: the current directory). It must contain
+   `modules/`, `envs/` and `.auth0tf/`. A project without `.auth0tf/` was generated
+   before resync existed: it cannot be resynced, so re-export it with the new-project flow.
+3. **Ask which env maps to this tenant** (list the directories under `envs/`).
+4. **Collect credentials** the same way as for a new project (env file recommended).
+5. **Pull fresh tenant state** into `/tmp/auth0tf-raw` (see Generate, step 1, including the
+   fallback when `auth0_generated.tf` is missing).
+6. **Dry run first**, from the skill directory, and show the report:
+   ```bash
+   python3 -m scripts.auth0tf.cli resync --input /tmp/auth0tf-raw \
+     --project "$PROJECT" --env <env> --dry-run
+   ```
+7. **Run it for real** once the user agrees (drop `--dry-run`). The project must have no
+   uncommitted changes in managed files; otherwise resync stops and changes nothing.
+8. **Report** to the user, from the command output:
+   - resources `+ added`, `~ changed`, `- removed`;
+   - **removed resources: warn clearly.** Applying a project that no longer has them will
+     destroy them in any tenant that does. A rename appears as a removal plus an addition;
+   - **new secret keys** the customer must add to `secrets` (otherwise `plan` fails);
+   - the branch name and commit, and `git diff auth0/resync~1 auth0/resync` to review;
+   - any **conflicts**: files with markers fail `terraform validate` on purpose. List them
+     and the commits that touched them; the customer resolves them by hand.
+9. **Update `PROJECT_CONTEXT.md`** if it exists: append to "What's done" (date, branch), and
+   put unresolved conflicts or new secret keys under "What's in progress".
+
+### Exit codes and flags
+`0` ok or nothing to do, `1` finished with conflicts, `2` refused (no baseline, wrong env,
+not a git repo, uncommitted managed files). Nothing is changed on a refusal.
+`--no-git` writes in place without a branch; `--branch NAME` picks the branch name.
+
+### Limits to tell the user
+- A resource renamed in the dashboard looks like a removal plus an addition.
+- Secret **values** are never seen; resync can only add or remove key names.
+- `terraform.tfvars` is one large file, so a customer edit right next to a tenant change can
+  conflict. Output is sorted and one attribute per line to keep that rare.
+
 ## Report
 
 Summarize: resource counts per type, environments created (populated vs skeleton),
@@ -308,6 +378,7 @@ in Terraform state; the customer never supplies them.
   with the tenant's built-ins, and would hardcode the source domain. Excluded
   resources are listed in the CLI output and the README. Custom resource servers
   are kept.
+- `.auth0tf/` (baseline and state used by resync) is part of the project: commit it.
 - The `connections` variable is declared `type = any` because connections with
   differently shaped nested blocks cannot share one object type (see
   `LOOSELY_TYPED` in `emit_modules.py`).
